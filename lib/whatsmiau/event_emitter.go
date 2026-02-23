@@ -166,6 +166,7 @@ func (s *Whatsmiau) handleLoggedOut(id string) {
 
 	s.clients.Delete(id)
 }
+
 func (s *Whatsmiau) handleMessageEvent(id string, instance *models.Instance, e *events.Message, eventMap map[string]bool) {
 	if !eventMap["MESSAGES_UPSERT"] {
 		return
@@ -204,10 +205,22 @@ func (s *Whatsmiau) handleMessageEvent(id string, instance *models.Instance, e *
 		zap.L().Debug("message event", zap.String("instance", id), zap.Any("data", wookMessage.Data))
 	}
 
+	// DEBUG: log base64 status antes de enviar ao chatwoot
+	if messageData.Message != nil {
+		zap.L().Info("chatwoot pre-dispatch",
+			zap.String("instanceId", id),
+			zap.String("messageType", messageData.MessageType),
+			zap.Bool("webhookBase64Enabled", instance.Webhook.Base64 != nil && *instance.Webhook.Base64),
+			zap.Bool("hasBase64", messageData.Message.Base64 != ""),
+			zap.Int("base64Len", len(messageData.Message.Base64)),
+		)
+	}
+
 	s.emit(wookMessage, instance.Webhook.Url)
+
 	if s.chatwootService != nil {
-    	go s.chatwootService.HandleMessage(messageData)
-    }
+		go s.chatwootService.HandleMessage(messageData)
+	}
 }
 
 func (s *Whatsmiau) handleReceiptEvent(id string, instance *models.Instance, e *events.Receipt, eventMap map[string]bool) {
@@ -769,34 +782,53 @@ func (s *Whatsmiau) uploadMessageFile(ctx context.Context, instance *models.Inst
 	if err != nil {
 		panic(err)
 	}
-
 	defer os.Remove(tmpFile.Name())
+
+	// 1. Download do arquivo
 	if err := client.DownloadToFile(ctx, fileMessage, tmpFile); err != nil {
-		zap.L().Error("failed to download image", zap.Error(err))
+		zap.L().Error("failed to download media", zap.Error(err))
 		return "", ""
 	}
 
+	// 2. Seek para o início antes de qualquer leitura
 	if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
-		zap.L().Error("failed to seek image", zap.Error(err))
+		zap.L().Error("failed to seek media file", zap.Error(err))
+		return "", ""
 	}
 
+	// 3. Detecta extensão (consome parte do cursor internamente via sniffing)
 	ext = extractExtFromFile(fileName, mimetype, tmpFile)
+
+	// 4. Seek novamente antes de ler para Base64
+	if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
+		zap.L().Error("failed to seek media file before base64", zap.Error(err))
+		return "", ""
+	}
+
+	// 5. Gera Base64 se habilitado
 	if instance.Webhook.Base64 != nil && *instance.Webhook.Base64 {
 		data, err := io.ReadAll(tmpFile)
 		if err != nil {
-			zap.L().Error("failed to read image", zap.Error(err))
+			zap.L().Error("failed to read media for base64", zap.Error(err))
 		} else {
 			b64Result = base64.StdEncoding.EncodeToString(data)
+			zap.L().Debug("base64 generated",
+				zap.String("mimetype", mimetype),
+				zap.Int("bytes", len(data)),
+				zap.Int("b64Len", len(b64Result)),
+			)
 		}
 	}
+
+	// 6. Upload para storage (GCS etc) se configurado
 	if s.fileStorage != nil {
 		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
-			zap.L().Error("failed to seek image", zap.Error(err))
-		}
-
-		urlResult, _, err = s.fileStorage.Upload(ctx, uuid.NewString()+"."+ext, mimetype, tmpFile)
-		if err != nil {
-			zap.L().Error("failed to upload image", zap.Error(err))
+			zap.L().Error("failed to seek media file before upload", zap.Error(err))
+		} else {
+			urlResult, _, err = s.fileStorage.Upload(ctx, uuid.NewString()+"."+ext, mimetype, tmpFile)
+			if err != nil {
+				zap.L().Error("failed to upload media to storage", zap.Error(err))
+			}
 		}
 	}
 
