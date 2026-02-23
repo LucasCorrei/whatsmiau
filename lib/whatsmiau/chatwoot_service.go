@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"time"
 
@@ -130,6 +131,8 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 		zap.L().Info("chatwoot: mídia enviada",
 			zap.String("phone", phone),
 			zap.String("type", messageData.MessageType),
+			zap.String("filename", filename),
+			zap.String("mimetype", mimetype),
 			zap.Int("conversationId", conversationID),
 		)
 		return
@@ -314,9 +317,14 @@ func (c *ChatwootService) sendMediaMessage(
 		_ = writer.WriteField("content", caption)
 	}
 
-	part, err := writer.CreateFormFile("attachments[]", filename)
+	// Content-Type explícito para o Chatwoot renderizar corretamente
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="attachments[]"; filename="%s"`, filename))
+	h.Set("Content-Type", mimetype)
+
+	part, err := writer.CreatePart(h)
 	if err != nil {
-		return fmt.Errorf("erro ao criar form file: %w", err)
+		return fmt.Errorf("erro ao criar form part: %w", err)
 	}
 	if _, err := part.Write(mediaBytes); err != nil {
 		return fmt.Errorf("erro ao escrever bytes: %w", err)
@@ -377,9 +385,10 @@ func extractPhone(remoteJid string) string {
 	return strings.Split(parts[0], ":")[0]
 }
 
+// extractMediaMeta retorna filename, caption e mimetype limpos baseado no tipo da mensagem
 func extractMediaMeta(data *WookMessageData) (filename, caption, mimetype string) {
 	if data.Message == nil {
-		return "file.bin", "", ""
+		return "file.bin", "", "application/octet-stream"
 	}
 
 	msg := data.Message
@@ -390,36 +399,86 @@ func extractMediaMeta(data *WookMessageData) (filename, caption, mimetype string
 
 	switch {
 	case msg.AudioMessage != nil:
-		mimetype = msg.AudioMessage.Mimetype
-		ext := "ogg"
-		if strings.Contains(mimetype, "mp4") {
-			ext = "m4a"
+		// PTT do WhatsApp vem como "audio/ogg; codecs=opus" — limpa para o Chatwoot
+		raw := msg.AudioMessage.Mimetype
+		if strings.Contains(raw, "ogg") {
+			mimetype = "audio/ogg"
+			filename = fmt.Sprintf("%s.ogg", id)
+		} else if strings.Contains(raw, "mp4") {
+			mimetype = "audio/mp4"
+			filename = fmt.Sprintf("%s.m4a", id)
+		} else {
+			mimetype = "audio/ogg"
+			filename = fmt.Sprintf("%s.ogg", id)
 		}
-		filename = fmt.Sprintf("%s.%s", id, ext)
+		caption = ""
 
 	case msg.VideoMessage != nil:
-		mimetype = msg.VideoMessage.Mimetype
+		mimetype = cleanMimetype(msg.VideoMessage.Mimetype, "video/mp4")
 		filename = fmt.Sprintf("%s.mp4", id)
 		caption = msg.VideoMessage.Caption
 
 	case msg.ImageMessage != nil:
-		mimetype = msg.ImageMessage.Mimetype
-		filename = fmt.Sprintf("%s.jpg", id)
+		mimetype = cleanMimetype(msg.ImageMessage.Mimetype, "image/jpeg")
+		ext := mimetypeToExt(mimetype, "jpg")
+		filename = fmt.Sprintf("%s.%s", id, ext)
 		caption = msg.ImageMessage.Caption
 
 	case msg.DocumentMessage != nil:
-		mimetype = msg.DocumentMessage.Mimetype
+		mimetype = cleanMimetype(msg.DocumentMessage.Mimetype, "application/octet-stream")
 		filename = msg.DocumentMessage.FileName
 		if filename == "" {
-			filename = fmt.Sprintf("%s.bin", id)
+			ext := mimetypeToExt(mimetype, "bin")
+			filename = fmt.Sprintf("%s.%s", id, ext)
 		}
 		caption = msg.DocumentMessage.Caption
 
 	default:
 		filename = fmt.Sprintf("%s.bin", id)
+		mimetype = "application/octet-stream"
 	}
 
 	return filename, caption, mimetype
+}
+
+// cleanMimetype remove parâmetros extras como "; codecs=opus" e retorna fallback se vazio
+func cleanMimetype(raw, fallback string) string {
+	if raw == "" {
+		return fallback
+	}
+	// Remove parâmetros: "image/jpeg; something" → "image/jpeg"
+	parts := strings.SplitN(raw, ";", 2)
+	clean := strings.TrimSpace(parts[0])
+	if clean == "" {
+		return fallback
+	}
+	return clean
+}
+
+// mimetypeToExt retorna extensão simples baseada no mimetype
+func mimetypeToExt(mimetype, fallback string) string {
+	switch mimetype {
+	case "image/jpeg":
+		return "jpg"
+	case "image/png":
+		return "png"
+	case "image/gif":
+		return "gif"
+	case "image/webp":
+		return "webp"
+	case "video/mp4":
+		return "mp4"
+	case "video/3gpp":
+		return "3gp"
+	case "audio/ogg":
+		return "ogg"
+	case "audio/mp4":
+		return "m4a"
+	case "application/pdf":
+		return "pdf"
+	default:
+		return fallback
+	}
 }
 
 func extractMessageText(data *WookMessageData) string {
