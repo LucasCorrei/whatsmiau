@@ -3,12 +3,12 @@ package whatsmiau
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -38,7 +38,7 @@ func NewChatwootService(config ChatwootConfig) *ChatwootService {
 }
 
 // =============================================================================
-// Structs de resposta do Chatwoot
+// Structs Chatwoot
 // =============================================================================
 
 type chatwootContact struct {
@@ -86,12 +86,29 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 		return
 	}
 
+	// Ignorar mensagens antigas (mais de 30 segundos) — evita flood no startup
+	if messageData.MessageTimestamp > 0 {
+		msgTime := time.Unix(int64(messageData.MessageTimestamp), 0)
+		if time.Since(msgTime) > 30*time.Second {
+			zap.L().Debug("chatwoot: ignorando mensagem antiga",
+				zap.Time("msgTime", msgTime),
+				zap.Duration("age", time.Since(msgTime)),
+			)
+			return
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	remoteJid := ""
 	if messageData.Key != nil {
 		remoteJid = messageData.Key.RemoteJid
+	}
+
+	// Ignorar status broadcast
+	if remoteJid == "status@broadcast" || strings.Contains(remoteJid, "@broadcast") {
+		return
 	}
 
 	phone := extractPhone(remoteJid)
@@ -124,27 +141,10 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 		return
 	}
 
-	// 3. Verificar se tem mídia
-	mediaURL, fileName, mimeType := extractMedia(messageData)
-	caption := extractCaption(messageData)
-	messageText := extractMessageText(messageData)
-
-	if mediaURL != "" {
-		// Enviar mídia como attachment
-		if err := c.sendAttachment(ctx, conversationID, mediaURL, fileName, mimeType, caption, messageID); err != nil {
-			zap.L().Error("chatwoot: erro ao enviar mídia", zap.Error(err))
-			// fallback: enviar como texto
-			_ = c.sendMessage(ctx, conversationID, messageText, messageID)
-		}
-	} else {
-		// Enviar mensagem de texto
-		if messageText == "" {
-			messageText = "[Mensagem não suportada]"
-		}
-		if err := c.sendMessage(ctx, conversationID, messageText, messageID); err != nil {
-			zap.L().Error("chatwoot: erro ao enviar mensagem", zap.Error(err))
-			return
-		}
+	// 3. Enviar conteúdo
+	if err := c.sendContent(ctx, conversationID, messageData, messageID); err != nil {
+		zap.L().Error("chatwoot: erro ao enviar conteúdo", zap.Error(err))
+		return
 	}
 
 	zap.L().Info("chatwoot: mensagem enviada com sucesso",
@@ -155,7 +155,39 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 }
 
 // =============================================================================
-// findOrCreateContact
+// sendContent — decide entre texto, base64 ou URL
+// =============================================================================
+
+func (c *ChatwootService) sendContent(ctx context.Context, conversationID int, messageData *WookMessageData, messageID string) error {
+	msg := messageData.Message
+	if msg == nil {
+		return c.sendMessage(ctx, conversationID, "[Mensagem vazia]", messageID)
+	}
+
+	caption := extractCaption(messageData)
+
+	// Prioridade 1: tem URL de mídia (GCS habilitado)
+	if msg.MediaURL != "" {
+		fileName, mimeType := guessFileInfo(messageData.MessageType, msg)
+		return c.sendAttachmentFromURL(ctx, conversationID, msg.MediaURL, fileName, mimeType, caption, messageID)
+	}
+
+	// Prioridade 2: tem base64 (instância configurada com base64=true)
+	if msg.Base64 != "" {
+		fileName, mimeType := guessFileInfo(messageData.MessageType, msg)
+		return c.sendAttachmentFromBase64(ctx, conversationID, msg.Base64, fileName, mimeType, caption, messageID)
+	}
+
+	// Prioridade 3: mensagem de texto
+	text := extractMessageText(messageData)
+	if text == "" {
+		text = "[Mensagem não suportada]"
+	}
+	return c.sendMessage(ctx, conversationID, text, messageID)
+}
+
+// =============================================================================
+// Contato
 // =============================================================================
 
 func (c *ChatwootService) findOrCreateContact(ctx context.Context, phone, name, identifier string) (int, error) {
@@ -207,6 +239,7 @@ func (c *ChatwootService) createContact(ctx context.Context, phone, name, identi
 		"name":         name,
 		"phone_number": fmt.Sprintf("+%s", phone),
 		"identifier":   identifier,
+		"inbox_id":     c.config.InboxID,
 	}
 
 	resp, err := c.doRequest(ctx, "POST", url, body)
@@ -223,7 +256,7 @@ func (c *ChatwootService) createContact(ctx context.Context, phone, name, identi
 }
 
 // =============================================================================
-// findOrCreateConversation
+// Conversa
 // =============================================================================
 
 func (c *ChatwootService) findOrCreateConversation(ctx context.Context, contactID int) (int, error) {
@@ -238,7 +271,8 @@ func (c *ChatwootService) findOrCreateConversation(ctx context.Context, contactI
 }
 
 func (c *ChatwootService) findOpenConversation(ctx context.Context, contactID int) (int, error) {
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/%d/conversations", c.config.URL, c.config.AccountID, contactID)
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/%d/conversations",
+		c.config.URL, c.config.AccountID, contactID)
 
 	resp, err := c.doRequest(ctx, "GET", url, nil)
 	if err != nil {
@@ -263,8 +297,8 @@ func (c *ChatwootService) createConversation(ctx context.Context, contactID int)
 	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations", c.config.URL, c.config.AccountID)
 
 	body := map[string]interface{}{
-		"contact_id": fmt.Sprintf("%d", contactID),
-		"inbox_id":   fmt.Sprintf("%d", c.config.InboxID),
+		"contact_id": contactID,  // number, não string
+		"inbox_id":   c.config.InboxID, // number, não string
 	}
 
 	resp, err := c.doRequest(ctx, "POST", url, body)
@@ -272,6 +306,11 @@ func (c *ChatwootService) createConversation(ctx context.Context, contactID int)
 		return 0, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("criar conversa erro %d: %s", resp.StatusCode, string(raw))
+	}
 
 	var result chatwootConversationCreateResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -281,11 +320,12 @@ func (c *ChatwootService) createConversation(ctx context.Context, contactID int)
 }
 
 // =============================================================================
-// sendMessage — texto simples
+// Envio de mensagens
 // =============================================================================
 
 func (c *ChatwootService) sendMessage(ctx context.Context, conversationID int, content, messageID string) error {
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages", c.config.URL, c.config.AccountID, conversationID)
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
+		c.config.URL, c.config.AccountID, conversationID)
 
 	body := map[string]interface{}{
 		"content":      content,
@@ -307,29 +347,44 @@ func (c *ChatwootService) sendMessage(ctx context.Context, conversationID int, c
 	return nil
 }
 
-// =============================================================================
-// sendAttachment — mídia via multipart (foto, vídeo, áudio, documento)
-// =============================================================================
-
-func (c *ChatwootService) sendAttachment(ctx context.Context, conversationID int, mediaURL, fileName, mimeType, caption, messageID string) error {
-	// 1. Baixar o arquivo da URL
+// sendAttachmentFromURL — baixa da URL e envia como multipart
+func (c *ChatwootService) sendAttachmentFromURL(ctx context.Context, conversationID int, mediaURL, fileName, mimeType, caption, messageID string) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", mediaURL, nil)
 	if err != nil {
-		return fmt.Errorf("erro ao criar request de download: %w", err)
+		return fmt.Errorf("erro request download: %w", err)
 	}
 
 	dlResp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("erro ao baixar mídia: %w", err)
+		return fmt.Errorf("erro download mídia: %w", err)
 	}
 	defer dlResp.Body.Close()
 
 	fileData, err := io.ReadAll(dlResp.Body)
 	if err != nil {
-		return fmt.Errorf("erro ao ler mídia: %w", err)
+		return fmt.Errorf("erro leitura mídia: %w", err)
 	}
 
-	// 2. Montar multipart
+	return c.sendMultipart(ctx, conversationID, fileData, fileName, caption, messageID)
+}
+
+// sendAttachmentFromBase64 — decodifica base64 e envia como multipart
+func (c *ChatwootService) sendAttachmentFromBase64(ctx context.Context, conversationID int, b64, fileName, mimeType, caption, messageID string) error {
+	// Remove prefixo data:image/jpeg;base64, se existir
+	if idx := strings.Index(b64, ","); idx != -1 {
+		b64 = b64[idx+1:]
+	}
+
+	fileData, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return fmt.Errorf("erro decodificar base64: %w", err)
+	}
+
+	return c.sendMultipart(ctx, conversationID, fileData, fileName, caption, messageID)
+}
+
+// sendMultipart — envia arquivo como form-data para o Chatwoot
+func (c *ChatwootService) sendMultipart(ctx context.Context, conversationID int, fileData []byte, fileName, caption, messageID string) error {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
@@ -342,15 +397,13 @@ func (c *ChatwootService) sendAttachment(ctx context.Context, conversationID int
 
 	part, err := writer.CreateFormFile("attachments[]", fileName)
 	if err != nil {
-		return fmt.Errorf("erro ao criar form file: %w", err)
+		return fmt.Errorf("erro criar form file: %w", err)
 	}
 	if _, err := part.Write(fileData); err != nil {
-		return fmt.Errorf("erro ao escrever arquivo no form: %w", err)
+		return fmt.Errorf("erro escrever arquivo: %w", err)
 	}
-
 	writer.Close()
 
-	// 3. Enviar para o Chatwoot
 	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
 		c.config.URL, c.config.AccountID, conversationID)
 
@@ -358,7 +411,6 @@ func (c *ChatwootService) sendAttachment(ctx context.Context, conversationID int
 	if err != nil {
 		return err
 	}
-
 	postReq.Header.Set("api_access_token", c.config.Token)
 	postReq.Header.Set("Content-Type", writer.FormDataContentType())
 
@@ -372,8 +424,6 @@ func (c *ChatwootService) sendAttachment(ctx context.Context, conversationID int
 		raw, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("chatwoot attachment erro %d: %s", resp.StatusCode, string(raw))
 	}
-
-	_ = mimeType
 	return nil
 }
 
@@ -395,13 +445,11 @@ func (c *ChatwootService) doRequest(ctx context.Context, method, url string, bod
 	if err != nil {
 		return nil, err
 	}
-
 	req.Header.Set("api_access_token", c.config.Token)
 	req.Header.Set("Content-Type", "application/json")
 	return c.httpClient.Do(req)
 }
 
-// extractPhone extrai o número limpo do remoteJid
 func extractPhone(remoteJid string) string {
 	parts := strings.Split(remoteJid, "@")
 	if len(parts) == 0 {
@@ -410,29 +458,11 @@ func extractPhone(remoteJid string) string {
 	return strings.Split(parts[0], ":")[0]
 }
 
-// extractMedia retorna (mediaURL, fileName, mimeType) se a mensagem tiver mídia
-func extractMedia(data *WookMessageData) (string, string, string) {
-	if data.Message == nil {
-		return "", "", ""
-	}
-	msg := data.Message
-
-	if msg.MediaURL != "" {
-		fileName := guessFileName(data.MessageType, msg)
-		mimeType := guessMimeType(data.MessageType)
-		return msg.MediaURL, fileName, mimeType
-	}
-
-	return "", "", ""
-}
-
-// extractCaption retorna a legenda da mídia (se houver)
 func extractCaption(data *WookMessageData) string {
 	if data.Message == nil {
 		return ""
 	}
 	msg := data.Message
-
 	if msg.ImageMessage != nil && msg.ImageMessage.Caption != "" {
 		return msg.ImageMessage.Caption
 	}
@@ -445,7 +475,6 @@ func extractCaption(data *WookMessageData) string {
 	return ""
 }
 
-// extractMessageText extrai o texto para mensagens sem mídia
 func extractMessageText(data *WookMessageData) string {
 	if data.Message == nil {
 		return ""
@@ -485,38 +514,46 @@ func extractMessageText(data *WookMessageData) string {
 	return ""
 }
 
-func guessFileName(messageType string, msg *WookMessageRaw) string {
+func guessFileInfo(messageType string, msg *WookMessageRaw) (fileName, mimeType string) {
+	// Nome do arquivo
 	if msg.DocumentMessage != nil && msg.DocumentMessage.FileName != "" {
-		return msg.DocumentMessage.FileName
-	}
-
-	ext := map[string]string{
-		"imageMessage":    ".jpg",
-		"videoMessage":    ".mp4",
-		"audioMessage":    ".ogg",
-		"documentMessage": ".bin",
-	}
-
-	e, ok := ext[messageType]
-	if !ok {
-		e = filepath.Ext(msg.MediaURL)
-		if e == "" {
-			e = ".bin"
+		fileName = msg.DocumentMessage.FileName
+	} else {
+		extMap := map[string]string{
+			"imageMessage":    ".jpg",
+			"videoMessage":    ".mp4",
+			"audioMessage":    ".ogg",
+			"documentMessage": ".bin",
 		}
+		ext, ok := extMap[messageType]
+		if !ok {
+			ext = ".bin"
+		}
+		fileName = fmt.Sprintf("arquivo%s", ext)
 	}
 
-	return fmt.Sprintf("arquivo%s", e)
-}
-
-func guessMimeType(messageType string) string {
-	types := map[string]string{
+	// Mimetype
+	mimeMap := map[string]string{
 		"imageMessage":    "image/jpeg",
 		"videoMessage":    "video/mp4",
-		"audioMessage":    "audio/ogg",
+		"audioMessage":    "audio/ogg; codecs=opus",
 		"documentMessage": "application/octet-stream",
 	}
-	if t, ok := types[messageType]; ok {
-		return t
+	mimeType, ok := mimeMap[messageType]
+	if !ok {
+		mimeType = "application/octet-stream"
 	}
-	return "application/octet-stream"
+
+	// Usar mimetype real se disponível
+	if msg.ImageMessage != nil && msg.ImageMessage.Mimetype != "" {
+		mimeType = msg.ImageMessage.Mimetype
+	} else if msg.AudioMessage != nil && msg.AudioMessage.Mimetype != "" {
+		mimeType = msg.AudioMessage.Mimetype
+	} else if msg.VideoMessage != nil && msg.VideoMessage.Mimetype != "" {
+		mimeType = msg.VideoMessage.Mimetype
+	} else if msg.DocumentMessage != nil && msg.DocumentMessage.Mimetype != "" {
+		mimeType = msg.DocumentMessage.Mimetype
+	}
+
+	return fileName, mimeType
 }
