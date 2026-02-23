@@ -32,6 +32,11 @@ type E struct {
 	ProxyAddresses []string `env:"PROXY_ADDRESSES" envDefault:""`      // random choices proxies ex: <SOCKS5|HTTP|HTTPS>://<username>:<password>@<host>:<port>
 	ProxyStrategy  string   `env:"PROXY_STRATEGY" envDefault:"RANDOM"` // todo: implement BALANCED
 	ProxyNoMedia   bool     `env:"PROXY_NO_MEDIA" envDefault:"false"`
+
+	ChatwootURL       string `env:"CHATWOOT_URL" envDefault:""`
+    ChatwootAccountID string `env:"CHATWOOT_ACCOUNT_ID" envDefault:""`
+    ChatwootToken     string `env:"CHATWOOT_TOKEN" envDefault:""`
+    ChatwootInboxID   int    `env:"CHATWOOT_INBOX_ID" envDefault:"0"`
 }
 
 var Env E
