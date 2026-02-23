@@ -1,39 +1,19 @@
 package whatsmiau
 
-// =============================================================================
-// chatwoot_service.go
-// Integração nativa WhatsMiau → Chatwoot
-//
-// Coloque este arquivo em: lib/whatsmiau/chatwoot_service.go
-//
-// Como usar:
-// 1. Adicione as variáveis de ambiente no .env (veja abaixo)
-// 2. Instancie o ChatwootService no seu main.go ou onde inicializar o Whatsmiau
-// 3. Chame chatwootService.HandleMessage(id, instance, e) dentro do
-//    handleMessageEvent em event_emitter.go
-// =============================================================================
-
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"go.uber.org/zap"
 )
-
-// =============================================================================
-// Variáveis de ambiente necessárias no .env:
-//
-// CHATWOOT_URL=https://seu-chatwoot.com
-// CHATWOOT_ACCOUNT_ID=1
-// CHATWOOT_TOKEN=seu_token_aqui
-// CHATWOOT_INBOX_ID=1
-// =============================================================================
 
 // ChatwootConfig configuração da integração
 type ChatwootConfig struct {
@@ -52,10 +32,8 @@ type ChatwootService struct {
 // NewChatwootService cria uma nova instância do serviço
 func NewChatwootService(config ChatwootConfig) *ChatwootService {
 	return &ChatwootService{
-		config: config,
-		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
-		},
+		config:     config,
+		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -96,11 +74,6 @@ type chatwootConversationCreateResponse struct {
 
 // =============================================================================
 // HandleMessage — ponto de entrada principal
-// Chame isso dentro do handleMessageEvent em event_emitter.go:
-//
-//   if s.chatwootService != nil {
-//       s.chatwootService.HandleMessage(id, instance, e)
-//   }
 // =============================================================================
 
 func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
@@ -113,10 +86,9 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// Extrair número limpo
 	remoteJid := ""
 	if messageData.Key != nil {
 		remoteJid = messageData.Key.RemoteJid
@@ -131,12 +103,6 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 	pushName := messageData.PushName
 	if pushName == "" {
 		pushName = phone
-	}
-
-	// Texto da mensagem
-	messageText := extractMessageText(messageData)
-	if messageText == "" {
-		messageText = "[Mensagem não suportada]"
 	}
 
 	messageID := ""
@@ -158,15 +124,33 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 		return
 	}
 
-	// 3. Enviar mensagem
-	if err := c.sendMessage(ctx, conversationID, messageText, messageID); err != nil {
-		zap.L().Error("chatwoot: erro ao enviar mensagem", zap.Error(err))
-		return
+	// 3. Verificar se tem mídia
+	mediaURL, fileName, mimeType := extractMedia(messageData)
+	caption := extractCaption(messageData)
+	messageText := extractMessageText(messageData)
+
+	if mediaURL != "" {
+		// Enviar mídia como attachment
+		if err := c.sendAttachment(ctx, conversationID, mediaURL, fileName, mimeType, caption, messageID); err != nil {
+			zap.L().Error("chatwoot: erro ao enviar mídia", zap.Error(err))
+			// fallback: enviar como texto
+			_ = c.sendMessage(ctx, conversationID, messageText, messageID)
+		}
+	} else {
+		// Enviar mensagem de texto
+		if messageText == "" {
+			messageText = "[Mensagem não suportada]"
+		}
+		if err := c.sendMessage(ctx, conversationID, messageText, messageID); err != nil {
+			zap.L().Error("chatwoot: erro ao enviar mensagem", zap.Error(err))
+			return
+		}
 	}
 
 	zap.L().Info("chatwoot: mensagem enviada com sucesso",
 		zap.String("phone", phone),
 		zap.Int("conversationId", conversationID),
+		zap.String("tipo", messageData.MessageType),
 	)
 }
 
@@ -175,22 +159,18 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 // =============================================================================
 
 func (c *ChatwootService) findOrCreateContact(ctx context.Context, phone, name, identifier string) (int, error) {
-	// Buscar pelo telefone
-	contactID, err := c.searchContact(ctx, phone)
+	id, err := c.searchContact(ctx, phone)
 	if err != nil {
 		return 0, err
 	}
-	if contactID > 0 {
-		return contactID, nil
+	if id > 0 {
+		return id, nil
 	}
-
-	// Criar novo contato
 	return c.createContact(ctx, phone, name, identifier)
 }
 
 func (c *ChatwootService) searchContact(ctx context.Context, phone string) (int, error) {
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/filter",
-		c.config.URL, c.config.AccountID)
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/filter", c.config.URL, c.config.AccountID)
 
 	body := map[string]interface{}{
 		"payload": []map[string]interface{}{
@@ -217,13 +197,11 @@ func (c *ChatwootService) searchContact(ctx context.Context, phone string) (int,
 	if len(result.Payload) > 0 {
 		return result.Payload[0].ID, nil
 	}
-
 	return 0, nil
 }
 
 func (c *ChatwootService) createContact(ctx context.Context, phone, name, identifier string) (int, error) {
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts",
-		c.config.URL, c.config.AccountID)
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts", c.config.URL, c.config.AccountID)
 
 	body := map[string]interface{}{
 		"name":         name,
@@ -241,7 +219,6 @@ func (c *ChatwootService) createContact(ctx context.Context, phone, name, identi
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return 0, err
 	}
-
 	return result.Payload.Contact.ID, nil
 }
 
@@ -250,22 +227,18 @@ func (c *ChatwootService) createContact(ctx context.Context, phone, name, identi
 // =============================================================================
 
 func (c *ChatwootService) findOrCreateConversation(ctx context.Context, contactID int) (int, error) {
-	// Buscar conversa aberta
-	convID, err := c.findOpenConversation(ctx, contactID)
+	id, err := c.findOpenConversation(ctx, contactID)
 	if err != nil {
 		return 0, err
 	}
-	if convID > 0 {
-		return convID, nil
+	if id > 0 {
+		return id, nil
 	}
-
-	// Criar nova conversa
 	return c.createConversation(ctx, contactID)
 }
 
 func (c *ChatwootService) findOpenConversation(ctx context.Context, contactID int) (int, error) {
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/%d/conversations",
-		c.config.URL, c.config.AccountID, contactID)
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/%d/conversations", c.config.URL, c.config.AccountID, contactID)
 
 	resp, err := c.doRequest(ctx, "GET", url, nil)
 	if err != nil {
@@ -283,13 +256,11 @@ func (c *ChatwootService) findOpenConversation(ctx context.Context, contactID in
 			return conv.ID, nil
 		}
 	}
-
 	return 0, nil
 }
 
 func (c *ChatwootService) createConversation(ctx context.Context, contactID int) (int, error) {
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations",
-		c.config.URL, c.config.AccountID)
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations", c.config.URL, c.config.AccountID)
 
 	body := map[string]interface{}{
 		"contact_id": fmt.Sprintf("%d", contactID),
@@ -306,17 +277,15 @@ func (c *ChatwootService) createConversation(ctx context.Context, contactID int)
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return 0, err
 	}
-
 	return result.ID, nil
 }
 
 // =============================================================================
-// sendMessage
+// sendMessage — texto simples
 // =============================================================================
 
 func (c *ChatwootService) sendMessage(ctx context.Context, conversationID int, content, messageID string) error {
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
-		c.config.URL, c.config.AccountID, conversationID)
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages", c.config.URL, c.config.AccountID, conversationID)
 
 	body := map[string]interface{}{
 		"content":      content,
@@ -333,9 +302,78 @@ func (c *ChatwootService) sendMessage(ctx context.Context, conversationID int, c
 
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("chatwoot API erro %d: %s", resp.StatusCode, string(raw))
+		return fmt.Errorf("chatwoot erro %d: %s", resp.StatusCode, string(raw))
+	}
+	return nil
+}
+
+// =============================================================================
+// sendAttachment — mídia via multipart (foto, vídeo, áudio, documento)
+// =============================================================================
+
+func (c *ChatwootService) sendAttachment(ctx context.Context, conversationID int, mediaURL, fileName, mimeType, caption, messageID string) error {
+	// 1. Baixar o arquivo da URL
+	req, err := http.NewRequestWithContext(ctx, "GET", mediaURL, nil)
+	if err != nil {
+		return fmt.Errorf("erro ao criar request de download: %w", err)
 	}
 
+	dlResp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("erro ao baixar mídia: %w", err)
+	}
+	defer dlResp.Body.Close()
+
+	fileData, err := io.ReadAll(dlResp.Body)
+	if err != nil {
+		return fmt.Errorf("erro ao ler mídia: %w", err)
+	}
+
+	// 2. Montar multipart
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+
+	_ = writer.WriteField("message_type", "incoming")
+	_ = writer.WriteField("source_id", fmt.Sprintf("WAID:%s", messageID))
+
+	if caption != "" {
+		_ = writer.WriteField("content", caption)
+	}
+
+	part, err := writer.CreateFormFile("attachments[]", fileName)
+	if err != nil {
+		return fmt.Errorf("erro ao criar form file: %w", err)
+	}
+	if _, err := part.Write(fileData); err != nil {
+		return fmt.Errorf("erro ao escrever arquivo no form: %w", err)
+	}
+
+	writer.Close()
+
+	// 3. Enviar para o Chatwoot
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
+		c.config.URL, c.config.AccountID, conversationID)
+
+	postReq, err := http.NewRequestWithContext(ctx, "POST", url, &buf)
+	if err != nil {
+		return err
+	}
+
+	postReq.Header.Set("api_access_token", c.config.Token)
+	postReq.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := c.httpClient.Do(postReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("chatwoot attachment erro %d: %s", resp.StatusCode, string(raw))
+	}
+
+	_ = mimeType
 	return nil
 }
 
@@ -345,7 +383,6 @@ func (c *ChatwootService) sendMessage(ctx context.Context, conversationID int, c
 
 func (c *ChatwootService) doRequest(ctx context.Context, method, url string, body interface{}) (*http.Response, error) {
 	var bodyReader io.Reader
-
 	if body != nil {
 		data, err := json.Marshal(body)
 		if err != nil {
@@ -361,69 +398,125 @@ func (c *ChatwootService) doRequest(ctx context.Context, method, url string, bod
 
 	req.Header.Set("api_access_token", c.config.Token)
 	req.Header.Set("Content-Type", "application/json")
-
 	return c.httpClient.Do(req)
 }
 
 // extractPhone extrai o número limpo do remoteJid
-// Ex: "5511999999999@s.whatsapp.net" → "5511999999999"
 func extractPhone(remoteJid string) string {
 	parts := strings.Split(remoteJid, "@")
 	if len(parts) == 0 {
 		return ""
 	}
-	// Remove o sufixo :XX (dispositivo)
-	phone := strings.Split(parts[0], ":")[0]
-	return phone
+	return strings.Split(parts[0], ":")[0]
 }
 
-// extractMessageText extrai o texto de qualquer tipo de mensagem
+// extractMedia retorna (mediaURL, fileName, mimeType) se a mensagem tiver mídia
+func extractMedia(data *WookMessageData) (string, string, string) {
+	if data.Message == nil {
+		return "", "", ""
+	}
+	msg := data.Message
+
+	if msg.MediaURL != "" {
+		fileName := guessFileName(data.MessageType, msg)
+		mimeType := guessMimeType(data.MessageType)
+		return msg.MediaURL, fileName, mimeType
+	}
+
+	return "", "", ""
+}
+
+// extractCaption retorna a legenda da mídia (se houver)
+func extractCaption(data *WookMessageData) string {
+	if data.Message == nil {
+		return ""
+	}
+	msg := data.Message
+
+	if msg.ImageMessage != nil && msg.ImageMessage.Caption != "" {
+		return msg.ImageMessage.Caption
+	}
+	if msg.VideoMessage != nil && msg.VideoMessage.Caption != "" {
+		return msg.VideoMessage.Caption
+	}
+	if msg.DocumentMessage != nil && msg.DocumentMessage.Caption != "" {
+		return msg.DocumentMessage.Caption
+	}
+	return ""
+}
+
+// extractMessageText extrai o texto para mensagens sem mídia
 func extractMessageText(data *WookMessageData) string {
 	if data.Message == nil {
 		return ""
 	}
-
 	msg := data.Message
 
 	if msg.Conversation != "" {
 		return msg.Conversation
 	}
-
 	if msg.ImageMessage != nil {
 		if msg.ImageMessage.Caption != "" {
 			return msg.ImageMessage.Caption
 		}
 		return "[Imagem]"
 	}
-
 	if msg.AudioMessage != nil {
 		return "[Áudio]"
 	}
-
 	if msg.VideoMessage != nil {
 		if msg.VideoMessage.Caption != "" {
 			return msg.VideoMessage.Caption
 		}
 		return "[Vídeo]"
 	}
-
 	if msg.DocumentMessage != nil {
-		if msg.DocumentMessage.Caption != "" {
-			return msg.DocumentMessage.Caption
-		}
 		if msg.DocumentMessage.FileName != "" {
 			return fmt.Sprintf("[Documento: %s]", msg.DocumentMessage.FileName)
 		}
 		return "[Documento]"
 	}
-
 	if msg.ContactMessage != nil {
 		return fmt.Sprintf("[Contato: %s]", msg.ContactMessage.DisplayName)
 	}
-
 	if msg.ReactionMessage != nil {
 		return fmt.Sprintf("[Reação: %s]", msg.ReactionMessage.Text)
 	}
-
 	return ""
+}
+
+func guessFileName(messageType string, msg *WookMessageRaw) string {
+	if msg.DocumentMessage != nil && msg.DocumentMessage.FileName != "" {
+		return msg.DocumentMessage.FileName
+	}
+
+	ext := map[string]string{
+		"imageMessage":    ".jpg",
+		"videoMessage":    ".mp4",
+		"audioMessage":    ".ogg",
+		"documentMessage": ".bin",
+	}
+
+	e, ok := ext[messageType]
+	if !ok {
+		e = filepath.Ext(msg.MediaURL)
+		if e == "" {
+			e = ".bin"
+		}
+	}
+
+	return fmt.Sprintf("arquivo%s", e)
+}
+
+func guessMimeType(messageType string) string {
+	types := map[string]string{
+		"imageMessage":    "image/jpeg",
+		"videoMessage":    "video/mp4",
+		"audioMessage":    "audio/ogg",
+		"documentMessage": "application/octet-stream",
+	}
+	if t, ok := types[messageType]; ok {
+		return t
+	}
+	return "application/octet-stream"
 }
