@@ -34,6 +34,7 @@ type Whatsmiau struct {
 	httpClient       *http.Client
 	fileStorage      interfaces.Storage
 	handlerSemaphore chan struct{}
+	chatwootService  *ChatwootService
 }
 
 var instance *Whatsmiau
@@ -126,6 +127,7 @@ func LoadMiau(ctx context.Context, container *sqlstore.Container) {
 		},
 		fileStorage:      storage,
 		handlerSemaphore: make(chan struct{}, env.Env.HandlerSemaphoreSize),
+		chatwootService:  loadChatwootService(),
 	}
 
 	go instance.startEmitter()
@@ -432,3 +434,23 @@ func (s *Whatsmiau) extractJidLid(ctx context.Context, id string, jid types.JID)
 
 	return jid.ToNonAD().String(), ""
 }
+func loadChatwootService() *ChatwootService {
+    url := env.Env.ChatwootURL
+    accountID := env.Env.ChatwootAccountID
+    token := env.Env.ChatwootToken
+    inboxID := env.Env.ChatwootInboxID
+
+    if url == "" || accountID == "" || token == "" || inboxID == 0 {
+        zap.L().Info("chatwoot: não configurado, integração desativada")
+        return nil
+    }
+
+    zap.L().Info("chatwoot: integração ativada", zap.String("url", url))
+    return NewChatwootService(ChatwootConfig{
+        URL:       url,
+        AccountID: accountID,
+        Token:     token,
+        InboxID:   inboxID,
+    })
+}
+
