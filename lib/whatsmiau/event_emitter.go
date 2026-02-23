@@ -205,17 +205,6 @@ func (s *Whatsmiau) handleMessageEvent(id string, instance *models.Instance, e *
 		zap.L().Debug("message event", zap.String("instance", id), zap.Any("data", wookMessage.Data))
 	}
 
-	// DEBUG: log base64 status antes de enviar ao chatwoot
-	if messageData.Message != nil {
-		zap.L().Info("chatwoot pre-dispatch",
-			zap.String("instanceId", id),
-			zap.String("messageType", messageData.MessageType),
-			zap.Bool("webhookBase64Enabled", instance.Webhook.Base64 != nil && *instance.Webhook.Base64),
-			zap.Bool("hasBase64", messageData.Message.Base64 != ""),
-			zap.Int("base64Len", len(messageData.Message.Base64)),
-		)
-	}
-
 	s.emit(wookMessage, instance.Webhook.Url)
 
 	if s.chatwootService != nil {
@@ -393,7 +382,6 @@ func (s *Whatsmiau) parseWAMessage(m *waE2E.Message) (string, *WookMessageRaw, *
 	raw := &WookMessageRaw{}
 	var ci *waE2E.ContextInfo
 
-	// === Prioritize action-like messages ===
 	if r := m.GetReactionMessage(); r != nil {
 		messageType = "reactionMessage"
 		reactionKey := &WookKey{}
@@ -495,7 +483,6 @@ func (s *Whatsmiau) parseWAMessage(m *waE2E.Message) (string, *WookMessageRaw, *
 		if err != nil {
 			zap.L().Error("decode card error", zap.Error(err))
 		}
-
 		messageType = "contactMessage"
 		raw.ContactMessage = &ContactMessageRaw{
 			VCard:        contact.GetVcard(),
@@ -511,7 +498,6 @@ func (s *Whatsmiau) parseWAMessage(m *waE2E.Message) (string, *WookMessageRaw, *
 			if err != nil {
 				zap.L().Error("decode card error", zap.Error(err))
 			}
-
 			contacts = append(contacts, ContactMessageRaw{
 				VCard:        contact.GetVcard(),
 				DisplayName:  contact.GetDisplayName(),
@@ -540,23 +526,18 @@ func (s *Whatsmiau) parseWAMessage(m *waE2E.Message) (string, *WookMessageRaw, *
 func (s *Whatsmiau) convertContactHistorySync(id string, event []*waHistorySync.Pushname, conversations []*waHistorySync.Conversation) WookContactUpsertData {
 	resultMap := make(map[string]WookContact)
 	for _, pushName := range event {
-
 		if len(pushName.GetPushname()) == 0 {
 			continue
 		}
-
 		if dt := strings.Split(pushName.GetPushname(), "@"); len(dt) == 2 && (dt[1] == "g.us" || dt[1] == "s.whatsapp.net") {
 			return nil
 		}
-
 		jid, err := types.ParseJID(pushName.GetID())
 		if err != nil {
 			zap.L().Error("failed to parse jid", zap.String("pushname", pushName.GetPushname()))
 			return nil
 		}
-
 		jidParsed, lid := s.GetJidLid(context.Background(), id, jid)
-
 		resultMap[jidParsed] = WookContact{
 			RemoteJid:  jidParsed,
 			PushName:   pushName.GetPushname(),
@@ -579,14 +560,12 @@ func (s *Whatsmiau) convertContactHistorySync(id string, event []*waHistorySync.
 		if dt := strings.Split(name, "@"); len(dt) == 2 && (dt[1] == "g.us" || dt[1] == "s.whatsapp.net") {
 			return nil
 		}
-
 		jid, err := types.ParseJID(conversation.GetID())
 		if err != nil {
 			zap.L().Error("failed to parse jid", zap.String("name", conversation.GetName()))
 			return nil
 		}
 		jidParsed, lid := s.GetJidLid(context.Background(), id, jid)
-
 		resultMap[conversation.GetID()] = WookContact{
 			RemoteJid:  jidParsed,
 			PushName:   name,
@@ -601,12 +580,10 @@ func (s *Whatsmiau) convertContactHistorySync(id string, event []*waHistorySync.
 		if err != nil {
 			continue
 		}
-
 		url, _, err := s.getPic(id, jid)
 		if err != nil {
 			zap.L().Error("failed to get pic", zap.Error(err))
 		}
-
 		c.ProfilePicUrl = url
 		result = append(result, c)
 	}
@@ -631,11 +608,9 @@ func (s *Whatsmiau) convertEventMessage(id string, instance *models.Instance, ev
 	jid, lid := s.GetJidLid(ctx, id, evt.Info.Chat)
 	senderJid, _ := s.GetJidLid(ctx, id, evt.Info.Sender)
 
-	// Always unwrap to work with the real content
 	e := evt.UnwrapRaw()
 	m := e.Message
 
-	// Build the key
 	key := &WookKey{
 		RemoteJid:   jid,
 		RemoteLid:   lid,
@@ -644,19 +619,16 @@ func (s *Whatsmiau) convertEventMessage(id string, instance *models.Instance, ev
 		Participant: senderJid,
 	}
 
-	// Determine status
 	status := "received"
 	if e.Info.IsFromMe {
 		status = "sent"
 	}
 
-	// Timestamp
 	ts := e.Info.Timestamp
 	if ts.IsZero() {
 		ts = time.Now()
 	}
 
-	// Convert the WA protobuf message into our internal raw structure
 	messageType, raw, ci := s.parseWAMessage(m)
 
 	// Upload media (URL / Base64) when needed
@@ -679,7 +651,6 @@ func (s *Whatsmiau) convertEventMessage(id string, instance *models.Instance, ev
 		}
 	}
 
-	// Map MessageContextInfo (quoted, mentions, disappearing mode, external ad reply)
 	var messageContext WookMessageContextInfo
 	if ci != nil {
 		messageContext.EphemeralSettingTimestamp = i64(ci.GetEphemeralSettingTimestamp())
@@ -796,7 +767,7 @@ func (s *Whatsmiau) uploadMessageFile(ctx context.Context, instance *models.Inst
 		return "", ""
 	}
 
-	// 3. Detecta extensão (consome parte do cursor internamente via sniffing)
+	// 3. Detecta extensão (pode consumir parte do cursor via sniffing)
 	ext = extractExtFromFile(fileName, mimetype, tmpFile)
 
 	// 4. Seek novamente antes de ler para Base64
@@ -805,7 +776,7 @@ func (s *Whatsmiau) uploadMessageFile(ctx context.Context, instance *models.Inst
 		return "", ""
 	}
 
-	// 5. Gera Base64 se habilitado
+	// 5. Gera Base64 se habilitado na instância
 	if instance.Webhook.Base64 != nil && *instance.Webhook.Base64 {
 		data, err := io.ReadAll(tmpFile)
 		if err != nil {
@@ -814,6 +785,7 @@ func (s *Whatsmiau) uploadMessageFile(ctx context.Context, instance *models.Inst
 			b64Result = base64.StdEncoding.EncodeToString(data)
 			zap.L().Debug("base64 generated",
 				zap.String("mimetype", mimetype),
+				zap.String("ext", ext),
 				zap.Int("bytes", len(data)),
 				zap.Int("b64Len", len(b64Result)),
 			)
