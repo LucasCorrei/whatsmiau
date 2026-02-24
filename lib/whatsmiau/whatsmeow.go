@@ -10,6 +10,7 @@ import (
 	"github.com/verbeux-ai/whatsmiau/env"
 	"github.com/verbeux-ai/whatsmiau/interfaces"
 	"github.com/verbeux-ai/whatsmiau/lib/storage/gcs"
+	"github.com/verbeux-ai/whatsmiau/lib/whatsmiau/chatwoot"  // ← ADICIONADO
 	"github.com/verbeux-ai/whatsmiau/models"
 	"github.com/verbeux-ai/whatsmiau/repositories/instances"
 	"github.com/verbeux-ai/whatsmiau/services"
@@ -34,7 +35,7 @@ type Whatsmiau struct {
 	httpClient       *http.Client
 	fileStorage      interfaces.Storage
 	handlerSemaphore chan struct{}
-	chatwootService  *ChatwootService
+	ChatwootService  *chatwoot.Service  // ← CORRIGIDO (era *ChatwootService)
 }
 
 var instance *Whatsmiau
@@ -86,7 +87,14 @@ func LoadMiau(ctx context.Context, container *sqlstore.Container) {
 
 		instanceFound, ok := instanceByRemoteJid[client.Store.ID.String()]
 		if ok {
-			configProxy(client, instanceFound.InstanceProxy)
+			// ← CORRIGIDO: usar campos diretos ao invés de InstanceProxy
+			configProxy(client, &ProxyInfo{
+				Host:     instanceFound.ProxyHost,
+				Port:     instanceFound.ProxyPort,
+				Protocol: instanceFound.ProxyProtocol,
+				Username: instanceFound.ProxyUsername,
+				Password: instanceFound.ProxyPassword,
+			})
 			clients.Store(instanceFound.ID, client)
 			if err := client.Connect(); err != nil {
 				zap.L().Error("failed to connect connected device", zap.Error(err), zap.String("jid", client.Store.ID.String()))
@@ -123,11 +131,11 @@ func LoadMiau(ctx context.Context, container *sqlstore.Container) {
 		lockConnection:  xsync.NewMap[string, *sync.Mutex](),
 		emitter:         make(chan emitter, env.Env.EmitterBufferSize),
 		httpClient: &http.Client{
-			Timeout: time.Second * 30, // TODO: load from env
+			Timeout: time.Second * 30,
 		},
 		fileStorage:      storage,
 		handlerSemaphore: make(chan struct{}, env.Env.HandlerSemaphoreSize),
-		chatwootService:  loadChatwootService(),
+		ChatwootService:  chatwoot.NewService(),  // ← CORRIGIDO (sem config global)
 	}
 
 	go instance.startEmitter()
@@ -180,7 +188,14 @@ func (s *Whatsmiau) generateClient(ctx context.Context, id string) (*whatsmeow.C
 	// trying recover existent connection
 	if s.hasSomeDevice(client) {
 		if instanceFound := s.getInstanceCached(id); instanceFound != nil {
-			configProxy(client, instanceFound.InstanceProxy)
+			// ← CORRIGIDO: usar campos diretos
+			configProxy(client, &ProxyInfo{
+				Host:     instanceFound.ProxyHost,
+				Port:     instanceFound.ProxyPort,
+				Protocol: instanceFound.ProxyProtocol,
+				Username: instanceFound.ProxyUsername,
+				Password: instanceFound.ProxyPassword,
+			})
 		}
 
 		if client.IsLoggedIn() {
@@ -201,7 +216,7 @@ func (s *Whatsmiau) generateClient(ctx context.Context, id string) (*whatsmeow.C
 
 		device := s.container.NewDevice()
 		client = whatsmeow.NewClient(device, s.logger)
-		s.clients.Store(id, client) // replaces old client
+		s.clients.Store(id, client)
 	}
 
 	return client, nil
@@ -248,8 +263,16 @@ func (s *Whatsmiau) observeConnection(client *whatsmeow.Client, id string) {
 	}
 
 	if instanceFound := s.getInstance(id); instanceFound != nil {
-		configProxy(client, instanceFound.InstanceProxy)
+		// ← CORRIGIDO: usar campos diretos
+		configProxy(client, &ProxyInfo{
+			Host:     instanceFound.ProxyHost,
+			Port:     instanceFound.ProxyPort,
+			Protocol: instanceFound.ProxyProtocol,
+			Username: instanceFound.ProxyUsername,
+			Password: instanceFound.ProxyPassword,
+		})
 	}
+	
 	if err := client.Connect(); err != nil {
 		zap.L().Error("failed to connect connected device", zap.Error(err))
 		s.clients.Delete(id)
@@ -262,7 +285,7 @@ func (s *Whatsmiau) observeConnection(client *whatsmeow.Client, id string) {
 	zap.L().Debug("waiting for QR channel event", zap.String("id", id))
 	for {
 		select {
-		case <-ctx.Done(): // QR code expiration
+		case <-ctx.Done():
 			zap.L().Debug("context ", zap.String("id", id), zap.Error(ctx.Err()))
 			if err := s.deleteDeviceIfExists(context.TODO(), client); err != nil {
 				zap.L().Error("failed to hard logout", zap.String("id", id), zap.Error(err))
@@ -270,7 +293,7 @@ func (s *Whatsmiau) observeConnection(client *whatsmeow.Client, id string) {
 			s.clients.Delete(id)
 			return
 		case evt, ok := <-qrChan:
-			if !ok || evt.Event == "error" || evt.Event == "timeout" { // closed qr chan
+			if !ok || evt.Event == "error" || evt.Event == "timeout" {
 				zap.L().Debug("QR channel closed", zap.String("id", id), zap.Any("evt", evt))
 				cancel()
 				continue
@@ -358,7 +381,6 @@ func (s *Whatsmiau) Status(id string) (Status, error) {
 		return Connected, nil
 	}
 
-	// If not connected, but we have a QR code, the state is QrCode
 	if _, ok := s.qrCache.Load(id); ok && client.IsConnected() {
 		return QrCode, nil
 	}
@@ -434,23 +456,5 @@ func (s *Whatsmiau) extractJidLid(ctx context.Context, id string, jid types.JID)
 
 	return jid.ToNonAD().String(), ""
 }
-func loadChatwootService() *ChatwootService {
-    url := env.Env.ChatwootURL
-    accountID := env.Env.ChatwootAccountID
-    token := env.Env.ChatwootToken
-    inboxID := env.Env.ChatwootInboxID
 
-    if url == "" || accountID == "" || token == "" || inboxID == 0 {
-        zap.L().Info("chatwoot: não configurado, integração desativada")
-        return nil
-    }
-
-    zap.L().Info("chatwoot: integração ativada", zap.String("url", url))
-    return NewChatwootService(ChatwootConfig{
-        URL:       url,
-        AccountID: accountID,
-        Token:     token,
-        InboxID:   inboxID,
-    })
-}
-
+// ← REMOVIDO loadChatwootService() - não precisa mais de config global
