@@ -4,7 +4,7 @@ import "github.com/verbeux-ai/whatsmiau/models"
 
 type CreateInstanceRequest struct {
 	ID               string `json:"id,omitempty" validate:"required_without=InstanceName"`
-	InstanceName     string `json:"instanceName,omitempty" validate:"required_without=InstanceID"`
+	InstanceName     string `json:"instanceName,omitempty" validate:"required_without=ID"`
 	*models.Instance        // optional arguments
 }
 
@@ -13,12 +13,52 @@ type CreateInstanceResponse struct {
 }
 
 type UpdateInstanceRequest struct {
-	ID      string `json:"id,omitempty" param:"id" validate:"required"`
-	Webhook struct {
-		Base64 bool     `json:"base64,omitempty"`
-		URL    string   `json:"url,omitempty"`
-		Events []string `json:"events,omitempty"`
+	ID string `json:"id,omitempty" param:"id" validate:"required"`
+
+	// ==============================
+	// WEBHOOK
+	// ==============================
+	Webhook *struct {
+		Base64   bool              `json:"base64,omitempty"`
+		URL      string            `json:"url,omitempty"`
+		ByEvents bool              `json:"byEvents,omitempty"`
+		Headers  map[string]string `json:"headers,omitempty"`
+		Events   []string          `json:"events,omitempty"`
 	} `json:"webhook,omitempty"`
+
+	// ==============================
+	// CHATWOOT - ADICIONADO COMPLETO
+	// ==============================
+	ChatwootEnabled               *bool   `json:"chatwootEnabled,omitempty"`
+	ChatwootAccountID             *int    `json:"chatwootAccountId,omitempty"`
+	ChatwootToken                 *string `json:"chatwootToken,omitempty"`
+	ChatwootURL                   *string `json:"chatwootUrl,omitempty"`
+	ChatwootSignMsg               *bool   `json:"chatwootSignMsg,omitempty"`
+	ChatwootReopenConversation    *bool   `json:"chatwootReopenConversation,omitempty"`
+	ChatwootConversationPending   *bool   `json:"chatwootConversationPending,omitempty"`
+	ChatwootImportContacts        *bool   `json:"chatwootImportContacts,omitempty"`
+	ChatwootNameInbox             *string `json:"chatwootNameInbox,omitempty"`
+	ChatwootMergeBrazilContacts   *bool   `json:"chatwootMergeBrazilContacts,omitempty"`
+	ChatwootImportMessages        *bool   `json:"chatwootImportMessages,omitempty"`
+	ChatwootDaysLimitImportMsg    *int    `json:"chatwootDaysLimitImportMessages,omitempty"`
+	ChatwootOrganization          *string `json:"chatwootOrganization,omitempty"`
+	ChatwootLogo                  *string `json:"chatwootLogo,omitempty"`
+
+	// ==============================
+	// RABBITMQ
+	// ==============================
+	RabbitMQ *struct {
+		Enabled bool     `json:"enabled,omitempty"`
+		Events  []string `json:"events,omitempty"`
+	} `json:"rabbitmq,omitempty"`
+
+	// ==============================
+	// SQS
+	// ==============================
+	SQS *struct {
+		Enabled bool     `json:"enabled,omitempty"`
+		Events  []string `json:"events,omitempty"`
+	} `json:"sqs,omitempty"`
 }
 
 type UpdateInstanceResponse struct {
@@ -32,7 +72,6 @@ type ListInstancesRequest struct {
 
 type ListInstancesResponse struct {
 	*models.Instance
-
 	OwnerJID     string `json:"ownerJid,omitempty"`
 	InstanceName string `json:"instanceName,omitempty"`
 }
