@@ -1,4 +1,4 @@
-package whatsmiau
+package chatwoot
 
 import (
 	"bytes"
