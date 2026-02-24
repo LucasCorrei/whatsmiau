@@ -2,9 +2,11 @@ package controllers
 
 import (
 	"net/http"
-	"strings"
+
 	"github.com/labstack/echo/v4"
+	"github.com/verbeux-ai/whatsmiau/interfaces"
 	"github.com/verbeux-ai/whatsmiau/lib/whatsmiau"
+	"go.mau.fi/whatsmeow/types"
 )
 
 // Struct para receber o webhook do Chatwoot
