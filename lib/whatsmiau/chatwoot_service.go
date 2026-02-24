@@ -1,495 +1,281 @@
-package whatsmiau
+package chatwoot
 
 import (
 	"bytes"
-	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
-	"net/textproto"
-	"strings"
 	"time"
 
+	"github.com/verbeux-ai/whatsmiau/models"
 	"go.uber.org/zap"
 )
 
-type ChatwootConfig struct {
-	URL       string
-	AccountID string
-	Token     string
-	InboxID   int
-	InboxName string
-}
-
-type ChatwootService struct {
-	config     ChatwootConfig
+type Service struct {
 	httpClient *http.Client
 }
 
-func NewChatwootService(config ChatwootConfig) *ChatwootService {
-	return &ChatwootService{
-		config:     config,
-		httpClient: &http.Client{Timeout: 15 * time.Second},
+func NewService() *Service {
+	return &Service{
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
 	}
 }
 
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// RESPONSE TYPES
-// ─────────────────────────────────────────────────────────────────────────────
-//
-
-type chatwootContact struct {
-	ID int `json:"id"`
-}
-
-type chatwootContactFilterResponse struct {
-	Payload []chatwootContact `json:"payload"`
-}
-
-type chatwootContactCreateResponse struct {
-	Payload struct {
-		Contact chatwootContact `json:"contact"`
-	} `json:"payload"`
-}
-
-type chatwootConversation struct {
-	ID      int    `json:"id"`
-	Status  string `json:"status"`
-	InboxID int    `json:"inbox_id"`
-}
-
-type chatwootConversationsResponse struct {
-	Payload []chatwootConversation `json:"payload"`
-}
-
-type chatwootConversationCreateResponse struct {
-	ID int `json:"id"`
-}
-
-type chatwootInbox struct {
-	ID   int    `json:"id"`
-	Name string `json:"name"`
-}
-
-type chatwootInboxListResponse struct {
-	Payload []chatwootInbox `json:"payload"`
-}
-
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// HANDLER PRINCIPAL
-// ─────────────────────────────────────────────────────────────────────────────
-//
-
-func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
-
-	if messageData == nil || (messageData.Key != nil && messageData.Key.FromMe) {
-		return
+// ========================================
+// EnsureInbox - Cria ou retorna inbox existente
+// IMPORTANTE: Usa as configs DA INSTÂNCIA, não de variáveis de ambiente
+// ========================================
+func (s *Service) EnsureInbox(instance *models.Instance) (string, error) {
+	// Validações
+	if instance.ChatwootURL == "" {
+		return "", fmt.Errorf("chatwoot URL not configured for instance %s", instance.ID)
+	}
+	if instance.ChatwootToken == "" {
+		return "", fmt.Errorf("chatwoot token not configured for instance %s", instance.ID)
+	}
+	if instance.ChatwootAccountID == 0 {
+		return "", fmt.Errorf("chatwoot account ID not configured for instance %s", instance.ID)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// 🔥 resolve inbox dinamicamente se necessário
-	if c.config.InboxID == 0 && c.config.InboxName != "" {
-		inboxID, err := c.ResolveInboxIDByName(ctx, c.config.InboxName)
-		if err != nil {
-			zap.L().Error("chatwoot: erro ao resolver inbox", zap.Error(err))
-			return
+	// Se já tem inbox ID, verificar se ainda existe
+	if instance.ChatwootInboxID != "" {
+		exists, err := s.checkInboxExists(instance)
+		if err == nil && exists {
+			zap.L().Info("inbox already exists",
+				zap.String("instance", instance.ID),
+				zap.String("inboxId", instance.ChatwootInboxID),
+			)
+			return instance.ChatwootInboxID, nil
 		}
-		c.config.InboxID = inboxID
+		zap.L().Warn("inbox not found, creating new one",
+			zap.String("instance", instance.ID),
+			zap.String("oldInboxId", instance.ChatwootInboxID),
+		)
 	}
 
-	remoteJid := ""
-	if messageData.Key != nil {
-		remoteJid = messageData.Key.RemoteJid
-	}
-
-	phone := extractPhone(remoteJid)
-	if phone == "" {
-		return
-	}
-
-	pushName := messageData.PushName
-	if pushName == "" {
-		pushName = phone
-	}
-
-	messageID := ""
-	if messageData.Key != nil {
-		messageID = messageData.Key.Id
-	}
-
-	contactID, err := c.findOrCreateContact(ctx, phone, pushName, remoteJid)
-	if err != nil {
-		zap.L().Error("erro contato", zap.Error(err))
-		return
-	}
-
-	conversationID, err := c.findOrCreateConversation(ctx, contactID)
-	if err != nil {
-		zap.L().Error("erro conversa", zap.Error(err))
-		return
-	}
-
-	msg := messageData.Message
-	if msg == nil {
-		return
-	}
-
-	// MEDIA
-	if msg.Base64 != "" {
-
-		filename, caption, mimetype := extractMediaMeta(messageData)
-
-		mediaBytes, err := base64.StdEncoding.DecodeString(msg.Base64)
-		if err != nil {
-			zap.L().Error("erro base64", zap.Error(err))
-			return
-		}
-
-		err = c.sendMediaMessage(ctx, conversationID, mediaBytes, filename, mimetype, caption, messageID)
-		if err != nil {
-			zap.L().Error("erro enviar mídia", zap.Error(err))
-		}
-		return
-	}
-
-	// TEXTO
-	text := extractMessageText(messageData)
-	if text == "" {
-		return
-	}
-
-	err = c.sendMessage(ctx, conversationID, text, messageID)
-	if err != nil {
-		zap.L().Error("erro enviar texto", zap.Error(err))
-	}
+	// Criar nova inbox
+	return s.createInbox(instance)
 }
 
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// INBOX RESOLVER
-// ─────────────────────────────────────────────────────────────────────────────
-//
-
-func (c *ChatwootService) ResolveInboxIDByName(ctx context.Context, inboxName string) (int, error) {
-
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/inboxes",
-		c.config.URL,
-		c.config.AccountID,
+// ========================================
+// checkInboxExists - Verifica se inbox existe
+// ========================================
+func (s *Service) checkInboxExists(instance *models.Instance) (bool, error) {
+	url := fmt.Sprintf("%s/api/v1/accounts/%d/inboxes/%s",
+		instance.ChatwootURL,
+		instance.ChatwootAccountID,
+		instance.ChatwootInboxID,
 	)
 
-	resp, err := c.doRequest(ctx, "GET", url, nil)
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return 0, err
+		return false, err
+	}
+
+	req.Header.Set("api_access_token", instance.ChatwootToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return false, err
 	}
 	defer resp.Body.Close()
 
-	var result chatwootInboxListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, err
-	}
-
-	for _, inbox := range result.Payload {
-		if strings.EqualFold(inbox.Name, inboxName) {
-			return inbox.ID, nil
-		}
-	}
-
-	return 0, fmt.Errorf("inbox '%s' não encontrada", inboxName)
+	return resp.StatusCode == http.StatusOK, nil
 }
 
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// CONTATOS
-// ─────────────────────────────────────────────────────────────────────────────
-//
-
-func (c *ChatwootService) findOrCreateContact(ctx context.Context, phone, name, identifier string) (int, error) {
-
-	id, err := c.searchContact(ctx, phone)
-	if err != nil {
-		return 0, err
+// ========================================
+// createInbox - Cria nova inbox no Chatwoot
+// ========================================
+func (s *Service) createInbox(instance *models.Instance) (string, error) {
+	// Nome da inbox (usar o configurado ou gerar padrão)
+	inboxName := instance.ChatwootNameInbox
+	if inboxName == "" {
+		inboxName = fmt.Sprintf("WhatsApp - %s", instance.ID)
 	}
-	if id > 0 {
-		return id, nil
-	}
-	return c.createContact(ctx, phone, name, identifier)
-}
 
-func (c *ChatwootService) searchContact(ctx context.Context, phone string) (int, error) {
-
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/filter",
-		c.config.URL,
-		c.config.AccountID,
-	)
-
-	body := map[string]interface{}{
-		"payload": []map[string]interface{}{
-			{
-				"attribute_key":   "phone_number",
-				"filter_operator": "equal_to",
-				"values":          []string{fmt.Sprintf("+%s", phone)},
-			},
+	// Payload para criar inbox
+	payload := map[string]interface{}{
+		"name":    inboxName,
+		"channel": map[string]interface{}{
+			"type":         "api",
+			"webhook_url":  "", // Será configurado depois se necessário
 		},
 	}
 
-	resp, err := c.doRequest(ctx, "POST", url, body)
+	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	var result chatwootContactFilterResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, err
+		return "", fmt.Errorf("failed to marshal inbox payload: %w", err)
 	}
 
-	if len(result.Payload) > 0 {
-		return result.Payload[0].ID, nil
-	}
-
-	return 0, nil
-}
-
-func (c *ChatwootService) createContact(ctx context.Context, phone, name, identifier string) (int, error) {
-
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts",
-		c.config.URL,
-		c.config.AccountID,
+	// Endpoint para criar inbox
+	url := fmt.Sprintf("%s/api/v1/accounts/%d/inboxes",
+		instance.ChatwootURL,
+		instance.ChatwootAccountID,
 	)
 
-	body := map[string]interface{}{
-		"name":         name,
-		"phone_number": fmt.Sprintf("+%s", phone),
-		"identifier":   identifier,
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	resp, err := c.doRequest(ctx, "POST", url, body)
+	// Headers com token DA INSTÂNCIA
+	req.Header.Set("api_access_token", instance.ChatwootToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return "", fmt.Errorf("chatwoot API error: %d - %s", resp.StatusCode, string(body))
+	}
+
+	// Parse resposta
+	var result struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	inboxID := fmt.Sprintf("%d", result.ID)
+
+	zap.L().Info("chatwoot inbox created successfully",
+		zap.String("instance", instance.ID),
+		zap.String("inboxId", inboxID),
+		zap.String("inboxName", result.Name),
+		zap.String("chatwootUrl", instance.ChatwootURL),
+	)
+
+	return inboxID, nil
+}
+
+// ========================================
+// CreateOrUpdateContact - Cria ou atualiza contato
+// ========================================
+func (s *Service) CreateOrUpdateContact(instance *models.Instance, phoneNumber, name string) (int, error) {
+	// Endpoint para criar contato
+	url := fmt.Sprintf("%s/api/v1/accounts/%d/contacts",
+		instance.ChatwootURL,
+		instance.ChatwootAccountID,
+	)
+
+	payload := map[string]interface{}{
+		"inbox_id":     instance.ChatwootInboxID,
+		"name":         name,
+		"phone_number": phoneNumber,
+	}
+
+	jsonData, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	req.Header.Set("api_access_token", instance.ChatwootToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return 0, err
 	}
 	defer resp.Body.Close()
 
-	var result chatwootContactCreateResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	var result struct {
+		Payload struct {
+			Contact struct {
+				ID int `json:"id"`
+			} `json:"contact"`
+		} `json:"payload"`
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(body, &result); err != nil {
 		return 0, err
 	}
 
 	return result.Payload.Contact.ID, nil
 }
 
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// CONVERSAS
-// ─────────────────────────────────────────────────────────────────────────────
-//
-
-func (c *ChatwootService) findOrCreateConversation(ctx context.Context, contactID int) (int, error) {
-
-	id, err := c.findOpenConversation(ctx, contactID)
-	if err != nil {
-		return 0, err
-	}
-	if id > 0 {
-		return id, nil
-	}
-
-	return c.createConversation(ctx, contactID)
-}
-
-func (c *ChatwootService) findOpenConversation(ctx context.Context, contactID int) (int, error) {
-
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/%d/conversations",
-		c.config.URL,
-		c.config.AccountID,
-		contactID,
+// ========================================
+// CreateConversation - Cria conversa no Chatwoot
+// ========================================
+func (s *Service) CreateConversation(instance *models.Instance, contactID int, sourceID string) (int, error) {
+	url := fmt.Sprintf("%s/api/v1/accounts/%d/conversations",
+		instance.ChatwootURL,
+		instance.ChatwootAccountID,
 	)
 
-	resp, err := c.doRequest(ctx, "GET", url, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	var result chatwootConversationsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, err
-	}
-
-	for _, conv := range result.Payload {
-		if conv.InboxID == c.config.InboxID && conv.Status != "resolved" {
-			return conv.ID, nil
-		}
-	}
-
-	return 0, nil
-}
-
-func (c *ChatwootService) createConversation(ctx context.Context, contactID int) (int, error) {
-
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations",
-		c.config.URL,
-		c.config.AccountID,
-	)
-
-	body := map[string]interface{}{
+	payload := map[string]interface{}{
+		"source_id":  sourceID,
+		"inbox_id":   instance.ChatwootInboxID,
 		"contact_id": contactID,
-		"inbox_id":   c.config.InboxID,
+		"status":     "open",
 	}
 
-	resp, err := c.doRequest(ctx, "POST", url, body)
+	jsonData, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	req.Header.Set("api_access_token", instance.ChatwootToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return 0, err
 	}
 	defer resp.Body.Close()
 
-	var result chatwootConversationCreateResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	var result struct {
+		ID int `json:"id"`
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(body, &result); err != nil {
 		return 0, err
 	}
 
 	return result.ID, nil
 }
 
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// ENVIO TEXTO
-// ─────────────────────────────────────────────────────────────────────────────
-//
-
-func (c *ChatwootService) sendMessage(ctx context.Context, conversationID int, content, messageID string) error {
-
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
-		c.config.URL,
-		c.config.AccountID,
+// ========================================
+// SendMessage - Envia mensagem para conversa
+// ========================================
+func (s *Service) SendMessage(instance *models.Instance, conversationID int, content string, messageType string) error {
+	url := fmt.Sprintf("%s/api/v1/accounts/%d/conversations/%d/messages",
+		instance.ChatwootURL,
+		instance.ChatwootAccountID,
 		conversationID,
 	)
 
-	body := map[string]interface{}{
+	payload := map[string]interface{}{
 		"content":      content,
-		"message_type": "incoming",
+		"message_type": messageType, // incoming ou outgoing
 		"private":      false,
-		"source_id":    fmt.Sprintf("WAID:%s", messageID),
 	}
 
-	resp, err := c.doRequest(ctx, "POST", url, body)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+	jsonData, _ := json.Marshal(payload)
 
-	return nil
-}
-
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// ENVIO MIDIA
-// ─────────────────────────────────────────────────────────────────────────────
-//
-
-func (c *ChatwootService) sendMediaMessage(
-	ctx context.Context,
-	conversationID int,
-	mediaBytes []byte,
-	filename, mimetype, caption, messageID string,
-) error {
-
-	var buf bytes.Buffer
-	writer := multipart.NewWriter(&buf)
-
-	_ = writer.WriteField("message_type", "incoming")
-	_ = writer.WriteField("private", "false")
-	_ = writer.WriteField("source_id", fmt.Sprintf("WAID:%s", messageID))
-
-	if caption != "" {
-		_ = writer.WriteField("content", caption)
-	}
-
-	h := make(textproto.MIMEHeader)
-	h.Set("Content-Disposition",
-		fmt.Sprintf(`form-data; name="attachments[]"; filename="%s"`, filename))
-	h.Set("Content-Type", mimetype)
-
-	part, err := writer.CreatePart(h)
-	if err != nil {
-		return err
-	}
-
-	_, err = part.Write(mediaBytes)
-	if err != nil {
-		return err
-	}
-
-	writer.Close()
-
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
-		c.config.URL,
-		c.config.AccountID,
-		conversationID,
-	)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, &buf)
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("api_access_token", c.config.Token)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	return nil
-}
-
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// HTTP
-// ─────────────────────────────────────────────────────────────────────────────
-//
-
-func (c *ChatwootService) doRequest(ctx context.Context, method, url string, body interface{}) (*http.Response, error) {
-
-	var bodyReader io.Reader
-
-	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-		bodyReader = bytes.NewReader(data)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("api_access_token", c.config.Token)
+	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	req.Header.Set("api_access_token", instance.ChatwootToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	return c.httpClient.Do(req)
-}
-
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
-//
-
-func extractPhone(remoteJid string) string {
-	parts := strings.Split(remoteJid, "@")
-	if len(parts) == 0 {
-		return ""
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return err
 	}
-	return strings.Split(parts[0], ":")[0]
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to send message: %d - %s", resp.StatusCode, string(body))
+	}
+
+	return nil
 }
