@@ -10,7 +10,6 @@ import (
 	"github.com/verbeux-ai/whatsmiau/env"
 	"github.com/verbeux-ai/whatsmiau/interfaces"
 	"github.com/verbeux-ai/whatsmiau/lib/storage/gcs"
-	"github.com/verbeux-ai/whatsmiau/lib/whatsmiau/chatwoot"  // ← ADICIONADO
 	"github.com/verbeux-ai/whatsmiau/models"
 	"github.com/verbeux-ai/whatsmiau/repositories/instances"
 	"github.com/verbeux-ai/whatsmiau/services"
