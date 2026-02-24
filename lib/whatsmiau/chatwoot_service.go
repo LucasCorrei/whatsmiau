@@ -13,7 +13,6 @@ import (
 	"net/textproto"
 	"strings"
 	"time"
-    "github.com/lib/pq"
 	"go.uber.org/zap"
 
 )
