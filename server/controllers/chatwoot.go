@@ -46,27 +46,22 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 		zap.Int64("conversation_id", webhook.Conversation.ID),
 	)
 
-	// Ignora mensagens privadas
 	if webhook.Private || webhook.IsPrivate {
 		return ctx.JSON(http.StatusOK, map[string]string{"message": "private message ignored"})
 	}
 
-	// Processa apenas mensagens outgoing (do agente para o cliente)
 	switch webhook.Event {
 	case "conversation_typing_on":
 		return c.handleTypingOn(ctx, instanceName, &webhook)
-	
+
 	case "message_created":
 		if webhook.MessageType == "outgoing" {
 			return c.handleOutgoingMessage(ctx, instanceName, &webhook)
 		}
-	
+
 	case "conversation_typing_off":
 		return c.handleTypingOff(ctx, instanceName, &webhook)
-	
-	case "message_updated":
-		zap.L().Debug("message_updated event received", zap.Int64("message_id", webhook.ID))
-	
+
 	default:
 		zap.L().Debug("unhandled chatwoot event", zap.String("event", webhook.Event))
 	}
@@ -77,23 +72,19 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 func (c *Chatwoot) handleTypingOn(ctx echo.Context, instanceName string, webhook *dto.ChatwootWebhookRequest) error {
 	jid, err := c.getJIDFromWebhook(webhook)
 	if err != nil {
-		zap.L().Error("failed to get JID from webhook", zap.Error(err))
 		return ctx.JSON(http.StatusOK, map[string]string{"message": "invalid jid"})
 	}
 
 	instanceID, err := c.getInstanceID(ctx.Request().Context(), instanceName)
 	if err != nil {
-		zap.L().Error("instance not found", zap.Error(err), zap.String("instance", instanceName))
 		return ctx.JSON(http.StatusOK, map[string]string{"message": "instance not found"})
 	}
 
-	if err := c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
+	_ = c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
 		InstanceID: instanceID,
 		RemoteJID:  jid,
 		Presence:   types.ChatPresenceComposing,
-	}); err != nil {
-		zap.L().Error("failed to send typing presence", zap.Error(err))
-	}
+	})
 
 	return ctx.JSON(http.StatusOK, map[string]string{"message": "typing on"})
 }
@@ -101,23 +92,19 @@ func (c *Chatwoot) handleTypingOn(ctx echo.Context, instanceName string, webhook
 func (c *Chatwoot) handleTypingOff(ctx echo.Context, instanceName string, webhook *dto.ChatwootWebhookRequest) error {
 	jid, err := c.getJIDFromWebhook(webhook)
 	if err != nil {
-		zap.L().Error("failed to get JID from webhook", zap.Error(err))
 		return ctx.JSON(http.StatusOK, map[string]string{"message": "invalid jid"})
 	}
 
 	instanceID, err := c.getInstanceID(ctx.Request().Context(), instanceName)
 	if err != nil {
-		zap.L().Error("instance not found", zap.Error(err))
 		return ctx.JSON(http.StatusOK, map[string]string{"message": "instance not found"})
 	}
 
-	if err := c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
+	_ = c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
 		InstanceID: instanceID,
 		RemoteJID:  jid,
 		Presence:   types.ChatPresencePaused,
-	}); err != nil {
-		zap.L().Error("failed to send paused presence", zap.Error(err))
-	}
+	})
 
 	return ctx.JSON(http.StatusOK, map[string]string{"message": "typing off"})
 }
@@ -125,26 +112,21 @@ func (c *Chatwoot) handleTypingOff(ctx echo.Context, instanceName string, webhoo
 func (c *Chatwoot) handleOutgoingMessage(ctx echo.Context, instanceName string, webhook *dto.ChatwootWebhookRequest) error {
 	jid, err := c.getJIDFromWebhook(webhook)
 	if err != nil {
-		zap.L().Error("failed to get JID from webhook", zap.Error(err))
 		return ctx.JSON(http.StatusOK, map[string]string{"error": "invalid jid"})
 	}
 
 	instanceID, err := c.getInstanceID(ctx.Request().Context(), instanceName)
 	if err != nil {
-		zap.L().Error("instance not found", zap.Error(err))
 		return ctx.JSON(http.StatusOK, map[string]string{"error": "instance not found"})
 	}
 
-	// 1. Marca presença como "composing"
-	if err := c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
+	// presença typing
+	_ = c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
 		InstanceID: instanceID,
 		RemoteJID:  jid,
 		Presence:   types.ChatPresenceComposing,
-	}); err != nil {
-		zap.L().Error("failed to send composing presence", zap.Error(err))
-	}
+	})
 
-	// Delay simulando digitação (500-2000ms)
 	delayMs := 500 + len(webhook.Content)
 	if delayMs > 2000 {
 		delayMs = 2000
@@ -153,47 +135,30 @@ func (c *Chatwoot) handleOutgoingMessage(ctx echo.Context, instanceName string, 
 
 	requestContext := ctx.Request().Context()
 
-	// 2. Envia a mensagem
 	var sendErr error
-	
-	// Verifica se tem anexos
-	if len(webhook.Conversation.Messages) > 0 && len(webhook.Conversation.Messages[0].Attachments) > 0 {
+
+	if len(webhook.Conversation.Messages) > 0 &&
+		len(webhook.Conversation.Messages[0].Attachments) > 0 {
+
 		sendErr = c.sendAttachments(requestContext, instanceID, jid, webhook)
+
 	} else if webhook.Content != "" {
-		// Envia texto
+
 		sendErr = c.sendTextMessage(requestContext, instanceID, jid, webhook.Content)
 	}
 
-	// 3. Remove presença (paused)
-	if err := c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
+	// presença paused
+	_ = c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
 		InstanceID: instanceID,
 		RemoteJID:  jid,
 		Presence:   types.ChatPresencePaused,
-	}); err != nil {
-		zap.L().Error("failed to send paused presence", zap.Error(err))
-	}
+	})
 
 	if sendErr != nil {
-		zap.L().Error("failed to send message", zap.Error(sendErr))
 		return ctx.JSON(http.StatusOK, map[string]string{"error": sendErr.Error()})
 	}
 
 	return ctx.JSON(http.StatusOK, map[string]string{"message": "sent"})
-}
-
-// getInstanceID busca o ID da instância usando o método List do repositório
-func (c *Chatwoot) getInstanceID(ctx context.Context, instanceName string) (string, error) {
-	instances, err := c.repo.List(ctx, instanceName)
-	if err != nil {
-		return "", fmt.Errorf("failed to list instances: %w", err)
-	}
-
-	if len(instances) == 0 {
-		return "", fmt.Errorf("instance %s not found", instanceName)
-	}
-
-	// Retorna o ID da primeira instância encontrada
-	return instances[0].ID, nil
 }
 
 func (c *Chatwoot) sendTextMessage(ctx context.Context, instanceID string, jid types.JID, content string) error {
@@ -211,25 +176,25 @@ func (c *Chatwoot) sendTextMessage(ctx context.Context, instanceID string, jid t
 func (c *Chatwoot) sendAttachments(ctx context.Context, instanceID string, jid types.JID, webhook *dto.ChatwootWebhookRequest) error {
 	for _, message := range webhook.Conversation.Messages {
 		for _, attachment := range message.Attachments {
-			var err error
-			
+
 			switch {
 			case strings.HasPrefix(attachment.FileType, "image/"):
-				err = c.sendImage(ctx, instanceID, jid, attachment.DataURL, webhook.Content)
-			
-			case strings.HasPrefix(attachment.FileType, "audio/"):
-				err = c.sendAudio(ctx, instanceID, jid, attachment.DataURL)
-			
-			default:
-				err = c.sendDocument(ctx, instanceID, jid, attachment.DataURL, webhook.Content, attachment.FileType)
-			}
+				if err := c.sendImage(ctx, instanceID, jid, attachment.DataURL, webhook.Content); err != nil {
+					return err
+				}
 
-			if err != nil {
-				return err
+			case strings.HasPrefix(attachment.FileType, "audio/"):
+				if err := c.sendAudio(ctx, instanceID, jid, attachment.DataURL); err != nil {
+					return err
+				}
+
+			default:
+				if err := c.sendDocument(ctx, instanceID, jid, attachment.DataURL, webhook.Content, attachment.FileType); err != nil {
+					return err
+				}
 			}
 		}
 	}
-	
 	return nil
 }
 
@@ -263,37 +228,37 @@ func (c *Chatwoot) sendDocument(ctx context.Context, instanceID string, jid type
 	return err
 }
 
+func (c *Chatwoot) getInstanceID(ctx context.Context, instanceName string) (string, error) {
+	instances, err := c.repo.List(ctx, instanceName)
+	if err != nil {
+		return "", err
+	}
+	if len(instances) == 0 {
+		return "", fmt.Errorf("instance not found")
+	}
+	return instances[0].ID, nil
+}
+
 func (c *Chatwoot) getJIDFromWebhook(webhook *dto.ChatwootWebhookRequest) (types.JID, error) {
 	var identifier string
 
-	// Tenta pegar do meta.sender.identifier
 	if webhook.Conversation.Meta.Sender.Identifier != "" {
 		identifier = webhook.Conversation.Meta.Sender.Identifier
 	} else if webhook.Conversation.ContactInbox.SourceID != "" {
 		identifier = webhook.Conversation.ContactInbox.SourceID
 	} else if webhook.Conversation.Meta.Sender.PhoneNumber != "" {
-		phoneNumber := strings.TrimPrefix(webhook.Conversation.Meta.Sender.PhoneNumber, "+")
-		identifier = fmt.Sprintf("%s@s.whatsapp.net", phoneNumber)
+		phone := strings.TrimPrefix(webhook.Conversation.Meta.Sender.PhoneNumber, "+")
+		identifier = fmt.Sprintf("%s@s.whatsapp.net", phone)
 	}
 
 	if identifier == "" {
-		return types.JID{}, fmt.Errorf("no identifier found in webhook")
+		return types.JID{}, fmt.Errorf("no identifier found")
 	}
 
-	jid, err := types.ParseJID(identifier)
-	if err != nil {
-		return types.JID{}, fmt.Errorf("failed to parse JID: %w", err)
-	}
-
-	return jid, nil
+	return types.ParseJID(identifier)
 }
 
 func (c *Chatwoot) convertChatwootToWhatsAppFormatting(content string) string {
-	// Converte **bold** do Chatwoot para *bold* do WhatsApp
 	content = strings.ReplaceAll(content, "**", "*")
-	
-	// Converte `code` para ```code```
-	// TODO: Implementar conversão mais robusta de markdown
-	
 	return content
 }
