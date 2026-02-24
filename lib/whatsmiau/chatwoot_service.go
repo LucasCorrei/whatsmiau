@@ -1,4 +1,4 @@
-package whatsmiau
+package chatwoot
 
 import (
 	"bytes"
@@ -30,29 +30,29 @@ func NewService() *Service {
 // ========================================
 func (s *Service) EnsureInbox(instance *models.Instance) (string, error) {
 	// Validações
-	if instance.ChatwootURL == "" {
+	if instance.ChatwootUrl == "" {
 		return "", fmt.Errorf("chatwoot URL not configured for instance %s", instance.ID)
 	}
 	if instance.ChatwootToken == "" {
 		return "", fmt.Errorf("chatwoot token not configured for instance %s", instance.ID)
 	}
-	if instance.ChatwootAccountID == 0 {
+	if instance.ChatwootAccountId == 0 {
 		return "", fmt.Errorf("chatwoot account ID not configured for instance %s", instance.ID)
 	}
 
 	// Se já tem inbox ID, verificar se ainda existe
-	if instance.ChatwootInboxID != "" {
+	if instance.ChatwootInboxId != "" {
 		exists, err := s.checkInboxExists(instance)
 		if err == nil && exists {
 			zap.L().Info("inbox already exists",
 				zap.String("instance", instance.ID),
-				zap.String("inboxId", instance.ChatwootInboxID),
+				zap.String("inboxId", instance.ChatwootInboxId),
 			)
-			return instance.ChatwootInboxID, nil
+			return instance.ChatwootInboxId, nil
 		}
 		zap.L().Warn("inbox not found, creating new one",
 			zap.String("instance", instance.ID),
-			zap.String("oldInboxId", instance.ChatwootInboxID),
+			zap.String("oldInboxId", instance.ChatwootInboxId),
 		)
 	}
 
@@ -65,9 +65,9 @@ func (s *Service) EnsureInbox(instance *models.Instance) (string, error) {
 // ========================================
 func (s *Service) checkInboxExists(instance *models.Instance) (bool, error) {
 	url := fmt.Sprintf("%s/api/v1/accounts/%d/inboxes/%s",
-		instance.ChatwootURL,
-		instance.ChatwootAccountID,
-		instance.ChatwootInboxID,
+		instance.ChatwootUrl,
+		instance.ChatwootAccountId,
+		instance.ChatwootInboxId,
 	)
 
 	req, err := http.NewRequest("GET", url, nil)
@@ -101,8 +101,8 @@ func (s *Service) createInbox(instance *models.Instance) (string, error) {
 	payload := map[string]interface{}{
 		"name":    inboxName,
 		"channel": map[string]interface{}{
-			"type":         "api",
-			"webhook_url":  "", // Será configurado depois se necessário
+			"type":        "api",
+			"webhook_url": "", // Será configurado depois se necessário
 		},
 	}
 
@@ -113,8 +113,8 @@ func (s *Service) createInbox(instance *models.Instance) (string, error) {
 
 	// Endpoint para criar inbox
 	url := fmt.Sprintf("%s/api/v1/accounts/%d/inboxes",
-		instance.ChatwootURL,
-		instance.ChatwootAccountID,
+		instance.ChatwootUrl,
+		instance.ChatwootAccountId,
 	)
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
@@ -154,7 +154,7 @@ func (s *Service) createInbox(instance *models.Instance) (string, error) {
 		zap.String("instance", instance.ID),
 		zap.String("inboxId", inboxID),
 		zap.String("inboxName", result.Name),
-		zap.String("chatwootUrl", instance.ChatwootURL),
+		zap.String("chatwootUrl", instance.ChatwootUrl),
 	)
 
 	return inboxID, nil
@@ -166,12 +166,12 @@ func (s *Service) createInbox(instance *models.Instance) (string, error) {
 func (s *Service) CreateOrUpdateContact(instance *models.Instance, phoneNumber, name string) (int, error) {
 	// Endpoint para criar contato
 	url := fmt.Sprintf("%s/api/v1/accounts/%d/contacts",
-		instance.ChatwootURL,
-		instance.ChatwootAccountID,
+		instance.ChatwootUrl,
+		instance.ChatwootAccountId,
 	)
 
 	payload := map[string]interface{}{
-		"inbox_id":     instance.ChatwootInboxID,
+		"inbox_id":     instance.ChatwootInboxId,
 		"name":         name,
 		"phone_number": phoneNumber,
 	}
@@ -209,13 +209,13 @@ func (s *Service) CreateOrUpdateContact(instance *models.Instance, phoneNumber, 
 // ========================================
 func (s *Service) CreateConversation(instance *models.Instance, contactID int, sourceID string) (int, error) {
 	url := fmt.Sprintf("%s/api/v1/accounts/%d/conversations",
-		instance.ChatwootURL,
-		instance.ChatwootAccountID,
+		instance.ChatwootUrl,
+		instance.ChatwootAccountId,
 	)
 
 	payload := map[string]interface{}{
 		"source_id":  sourceID,
-		"inbox_id":   instance.ChatwootInboxID,
+		"inbox_id":   instance.ChatwootInboxId,
 		"contact_id": contactID,
 		"status":     "open",
 	}
@@ -249,8 +249,8 @@ func (s *Service) CreateConversation(instance *models.Instance, contactID int, s
 // ========================================
 func (s *Service) SendMessage(instance *models.Instance, conversationID int, content string, messageType string) error {
 	url := fmt.Sprintf("%s/api/v1/accounts/%d/conversations/%d/messages",
-		instance.ChatwootURL,
-		instance.ChatwootAccountID,
+		instance.ChatwootUrl,
+		instance.ChatwootAccountId,
 		conversationID,
 	)
 
