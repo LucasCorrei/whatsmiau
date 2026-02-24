@@ -6,15 +6,11 @@ import (
 )
 
 func Load(app *echo.Echo) {
-
-	// 🔵 Webhook SEM Auth
-	Chatwoot(app)
-
-	// 🔐 API protegida
-	protected := app.Group("")
-	protected.Pre(middleware.Simplify(middleware.Auth))
-
-	V1(protected.Group("/v1"))
+	app.Pre(middleware.Simplify(middleware.Auth))
+	V1(app.Group("/v1"))
+	
+	// Webhook sem autenticação (ou você pode adicionar middleware específico)
+	Webhook(app.Group("/webhook"))
 }
 
 func V1(group *echo.Group) {
@@ -22,7 +18,6 @@ func V1(group *echo.Group) {
 	Instance(group.Group("/instance"))
 	Message(group.Group("/instance/:instance/message"))
 	Chat(group.Group("/instance/:instance/chat"))
-
 	ChatEVO(group.Group("/chat"))
 	MessageEVO(group.Group("/message"))
 }
