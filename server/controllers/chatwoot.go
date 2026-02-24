@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -28,266 +27,265 @@ func NewChatwoot(repository interfaces.InstanceRepository, whatsmiau *whatsmiau.
 	}
 }
 
-// ChatwootWebhookBody representa o payload recebido do Chatwoot
-type ChatwootWebhookBody struct {
-	Event        string `json:"event"`
-	MessageType  string `json:"message_type"`
-	Content      string `json:"content"`
-	ContentType  string `json:"content_type"`
-	Private      bool   `json:"private"`
-	ID           int    `json:"id"`
-	Conversation struct {
-		ID       int `json:"id"`
-		Meta struct {
-			Sender struct {
-				PhoneNumber string `json:"phone_number"`
-			} `json:"sender"`
-		} `json:"meta"`
-		ContactInbox struct {
-			SourceID string `json:"source_id"`
-		} `json:"contact_inbox"`
-		Messages []struct {
-			ID       int    `json:"id"`
-			SourceID string `json:"source_id"`
-		} `json:"messages"`
-	} `json:"conversation"`
-	Inbox struct {
-		ID   int    `json:"id"`
-		Name string `json:"name"`
-	} `json:"inbox"`
-	ContentAttributes struct {
-		Deleted bool `json:"deleted"`
-	} `json:"content_attributes"`
-	Sender struct {
-		Name string `json:"name"`
-	} `json:"sender"`
-}
-
-func (s *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
-	instanceID := ctx.Param("instance")
-	
-	// Log da request recebida
-	zap.L().Info("=== CHATWOOT WEBHOOK RECEIVED ===",
-		zap.String("instance_param", instanceID),
-		zap.String("method", ctx.Request().Method),
-		zap.String("url", ctx.Request().URL.String()),
-		zap.String("remote_addr", ctx.Request().RemoteAddr),
-	)
-	
-	if instanceID == "" {
-		zap.L().Error("instance parameter is empty")
-		return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "instance parameter is required")
+func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
+	instanceName := ctx.Param("instance")
+	if instanceName == "" {
+		return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "instance name is required")
 	}
 
-	var webhook ChatwootWebhookBody
+	var webhook dto.ChatwootWebhookRequest
 	if err := ctx.Bind(&webhook); err != nil {
-		zap.L().Error("failed to bind chatwoot webhook", 
-			zap.Error(err),
-			zap.String("error_detail", err.Error()),
-		)
+		zap.L().Error("failed to bind chatwoot webhook", zap.Error(err))
 		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
 	}
 
-	// Log do evento recebido com todos os detalhes
-	zap.L().Info("chatwoot webhook parsed",
-		zap.String("instance", instanceID),
+	zap.L().Info("chatwoot webhook received",
+		zap.String("instance", instanceName),
 		zap.String("event", webhook.Event),
-		zap.String("message_type", webhook.MessageType),
-		zap.String("content_type", webhook.ContentType),
-		zap.String("content", webhook.Content),
-		zap.Bool("private", webhook.Private),
-		zap.String("phone_number", webhook.Conversation.Meta.Sender.PhoneNumber),
-		zap.String("source_id", webhook.Conversation.ContactInbox.SourceID),
+		zap.Int64("conversation_id", webhook.Conversation.ID),
 	)
 
-	// Ignora se não tiver conversação ou se for mensagem privada
-	if webhook.Conversation.ID == 0 || webhook.Private {
-		zap.L().Info("event ignored - no conversation or private message")
-		return ctx.JSON(http.StatusOK, map[string]string{
-			"message": "bot",
-		})
-	}
-
-	// Ignora message_updated se não for delete
-	if webhook.Event == "message_updated" && !webhook.ContentAttributes.Deleted {
-		zap.L().Info("event ignored - message_updated without delete")
-		return ctx.JSON(http.StatusOK, map[string]string{
-			"message": "bot",
-		})
+	// Ignora mensagens privadas
+	if webhook.Private || webhook.IsPrivate {
+		return ctx.JSON(http.StatusOK, map[string]string{"message": "private message ignored"})
 	}
 
 	// Processa apenas mensagens outgoing (do agente para o cliente)
-	if webhook.Event != "message_created" || webhook.MessageType != "outgoing" {
-		zap.L().Info("event ignored - not an outgoing message creation",
-			zap.String("event", webhook.Event),
-			zap.String("message_type", webhook.MessageType),
-		)
-		return ctx.JSON(http.StatusOK, map[string]string{
-			"message": "bot",
-		})
-	}
-
-	// Verifica se já existe source_id (mensagem veio do WhatsApp, não processar)
-	if len(webhook.Conversation.Messages) > 0 && 
-	   webhook.Conversation.Messages[0].SourceID != "" &&
-	   strings.HasPrefix(webhook.Conversation.Messages[0].SourceID, "WAID:") {
-		zap.L().Info("event ignored - message originated from whatsapp")
-		return ctx.JSON(http.StatusOK, map[string]string{
-			"message": "bot",
-		})
-	}
-
-	zap.L().Info("processing message", 
-		zap.String("content_type", webhook.ContentType),
-		zap.String("content", webhook.Content),
-	)
-
-	// Processar baseado no tipo de conteúdo
-	switch webhook.ContentType {
-	case "text":
-		return s.handleTextMessage(ctx, instanceID, webhook)
+	switch webhook.Event {
+	case "conversation_typing_on":
+		return c.handleTypingOn(ctx, instanceName, &webhook)
+	
+	case "message_created":
+		if webhook.MessageType == "outgoing" {
+			return c.handleOutgoingMessage(ctx, instanceName, &webhook)
+		}
+	
+	case "conversation_typing_off":
+		return c.handleTypingOff(ctx, instanceName, &webhook)
+	
+	case "message_updated":
+		// Pode ser implementado para editar/deletar mensagens
+		zap.L().Debug("message_updated event received", zap.Int64("message_id", webhook.ID))
+	
 	default:
-		zap.L().Warn("unsupported content type",
-			zap.String("content_type", webhook.ContentType),
-		)
-		return ctx.JSON(http.StatusOK, map[string]string{
-			"status": "ignored",
-			"reason": "unsupported content type",
-		})
+		zap.L().Debug("unhandled chatwoot event", zap.String("event", webhook.Event))
 	}
+
+	return ctx.JSON(http.StatusOK, map[string]string{"message": "ok"})
 }
 
-func (s *Chatwoot) handleTextMessage(ctx echo.Context, instanceID string, webhook ChatwootWebhookBody) error {
-	zap.L().Info("=== HANDLING TEXT MESSAGE ===",
-		zap.String("instance", instanceID),
-		zap.String("content", webhook.Content),
-	)
-	
-	// Extrair número do telefone do identificador do contato
-	chatId := webhook.Conversation.Meta.Sender.PhoneNumber
-	if chatId == "" {
-		chatId = webhook.Conversation.ContactInbox.SourceID
-	}
-	
-	zap.L().Info("extracted chat identifier", 
-		zap.String("chat_id_raw", chatId),
-	)
-	
-	if chatId == "" {
-		zap.L().Error("chat identifier is empty in webhook")
-		return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "chat identifier not found in webhook")
-	}
-
-	// Limpar o número: remover + e caracteres especiais
-	// Pode vir como: +5548986133374 ou 5548986133374@s.whatsapp.net
-	phoneNumber := strings.Split(chatId, "@")[0]
-	phoneNumber = strings.ReplaceAll(phoneNumber, "+", "")
-	phoneNumber = strings.ReplaceAll(phoneNumber, " ", "")
-	phoneNumber = strings.ReplaceAll(phoneNumber, "-", "")
-	phoneNumber = strings.ReplaceAll(phoneNumber, "(", "")
-	phoneNumber = strings.ReplaceAll(phoneNumber, ")", "")
-	
-	zap.L().Info("cleaned phone number", 
-		zap.String("phone_original", chatId),
-		zap.String("phone_clean", phoneNumber),
-	)
-
-	// Converter número para JID
-	jid, err := numberToJid(phoneNumber)
+func (c *Chatwoot) handleTypingOn(ctx echo.Context, instanceName string, webhook *dto.ChatwootWebhookRequest) error {
+	jid, err := c.getJIDFromWebhook(webhook)
 	if err != nil {
-		zap.L().Error("error converting number to jid", 
-			zap.Error(err),
-			zap.String("phone_original", chatId),
-			zap.String("phone_clean", phoneNumber),
-		)
-		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid number format")
+		zap.L().Error("failed to get JID from webhook", zap.Error(err))
+		return ctx.JSON(http.StatusOK, map[string]string{"message": "invalid jid"})
 	}
-	zap.L().Info("converted to JID successfully", zap.String("jid", jid.String()))
 
-	// Formatar texto da mensagem (Chatwoot usa Markdown, WhatsApp usa formato próprio)
-	// Converte: *texto* -> _texto_ (itálico), **texto** -> *texto* (negrito)
-	messageText := webhook.Content
-	messageText = strings.ReplaceAll(messageText, "**", "*")  // Negrito
-	
-	// Se tiver nome do sender, adicionar assinatura
-	senderName := webhook.Sender.Name
-	if senderName != "" {
-		messageText = fmt.Sprintf("*%s:*\n%s", senderName, messageText)
+	// Busca instância para pegar instanceID
+	instance, err := c.repo.Get(ctx.Request().Context(), instanceName)
+	if err != nil {
+		zap.L().Error("instance not found", zap.Error(err), zap.String("instance", instanceName))
+		return ctx.JSON(http.StatusOK, map[string]string{"message": "instance not found"})
 	}
-	
-	zap.L().Info("formatted message text",
-		zap.String("original", webhook.Content),
-		zap.String("formatted", messageText),
-	)
 
-	// Enviar indicador de "digitando"
-	zap.L().Info("sending typing indicator...")
-	if err := s.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
-		InstanceID: instanceID,
+	if err := c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
+		InstanceID: instance.ID,
 		RemoteJID:  jid,
 		Presence:   types.ChatPresenceComposing,
 	}); err != nil {
-		zap.L().Error("Whatsmiau.ChatPresence failed", zap.Error(err))
-	} else {
-		zap.L().Info("typing indicator sent")
-		// Delay simulando digitação
-		time.Sleep(time.Millisecond * 500)
+		zap.L().Error("failed to send typing presence", zap.Error(err))
 	}
 
-	// Preparar e enviar mensagem
-	sendText := &whatsmiau.SendText{
-		Text:       messageText,
-		InstanceID: instanceID,
-		RemoteJID:  jid,
-	}
+	return ctx.JSON(http.StatusOK, map[string]string{"message": "typing on"})
+}
 
-	zap.L().Info("sending text message...",
-		zap.String("text", messageText),
-		zap.String("to_jid", jid.String()),
-	)
-
-	c := ctx.Request().Context()
-	res, err := s.whatsmiau.SendText(c, sendText)
+func (c *Chatwoot) handleTypingOff(ctx echo.Context, instanceName string, webhook *dto.ChatwootWebhookRequest) error {
+	jid, err := c.getJIDFromWebhook(webhook)
 	if err != nil {
-		zap.L().Error("Whatsmiau.SendText failed", 
-			zap.Error(err),
-			zap.String("error_detail", err.Error()),
-		)
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to send text")
+		zap.L().Error("failed to get JID from webhook", zap.Error(err))
+		return ctx.JSON(http.StatusOK, map[string]string{"message": "invalid jid"})
 	}
 
-	zap.L().Info("text message sent successfully!", 
-		zap.String("message_id", res.ID),
-	)
+	instance, err := c.repo.Get(ctx.Request().Context(), instanceName)
+	if err != nil {
+		zap.L().Error("instance not found", zap.Error(err))
+		return ctx.JSON(http.StatusOK, map[string]string{"message": "instance not found"})
+	}
 
-	// Enviar indicador de "parou de digitar"
-	zap.L().Info("sending pause indicator...")
-	if err := s.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
-		InstanceID: instanceID,
+	if err := c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
+		InstanceID: instance.ID,
 		RemoteJID:  jid,
 		Presence:   types.ChatPresencePaused,
 	}); err != nil {
-		zap.L().Error("Whatsmiau.ChatPresence pause failed", zap.Error(err))
-	} else {
-		zap.L().Info("pause indicator sent")
+		zap.L().Error("failed to send paused presence", zap.Error(err))
 	}
 
-	response := dto.SendTextResponse{
-		Key: dto.MessageResponseKey{
-			RemoteJid: chatId,
-			FromMe:    true,
-			Id:        res.ID,
-		},
-		Status: "sent",
-		Message: dto.SendTextResponseMessage{
-			Conversation: messageText,
-		},
-		MessageType:      "conversation",
-		MessageTimestamp: int(res.CreatedAt.Unix() / 1000),
-		InstanceId:       instanceID,
+	return ctx.JSON(http.StatusOK, map[string]string{"message": "typing off"})
+}
+
+func (c *Chatwoot) handleOutgoingMessage(ctx echo.Context, instanceName string, webhook *dto.ChatwootWebhookRequest) error {
+	jid, err := c.getJIDFromWebhook(webhook)
+	if err != nil {
+		zap.L().Error("failed to get JID from webhook", zap.Error(err))
+		return ctx.JSON(http.StatusOK, map[string]string{"error": "invalid jid"})
 	}
 
-	zap.L().Info("=== MESSAGE PROCESSED SUCCESSFULLY ===")
+	instance, err := c.repo.Get(ctx.Request().Context(), instanceName)
+	if err != nil {
+		zap.L().Error("instance not found", zap.Error(err))
+		return ctx.JSON(http.StatusOK, map[string]string{"error": "instance not found"})
+	}
 
-	return ctx.JSON(http.StatusOK, response)
+	// 1. Marca presença como "composing"
+	if err := c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
+		InstanceID: instance.ID,
+		RemoteJID:  jid,
+		Presence:   types.ChatPresenceComposing,
+	}); err != nil {
+		zap.L().Error("failed to send composing presence", zap.Error(err))
+	}
+
+	// Delay simulando digitação (500-2000ms)
+	time.Sleep(time.Millisecond * time.Duration(500+len(webhook.Content)))
+
+	requestContext := ctx.Request().Context()
+
+	// 2. Envia a mensagem
+	var sendErr error
+	
+	// Verifica se tem anexos
+	if len(webhook.Conversation.Messages) > 0 && len(webhook.Conversation.Messages[0].Attachments) > 0 {
+		sendErr = c.sendAttachments(requestContext, instance.ID, jid, webhook)
+	} else if webhook.Content != "" {
+		// Envia texto
+		sendErr = c.sendTextMessage(requestContext, instance.ID, jid, webhook.Content)
+	}
+
+	// 3. Remove presença (paused)
+	if err := c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
+		InstanceID: instance.ID,
+		RemoteJID:  jid,
+		Presence:   types.ChatPresencePaused,
+	}); err != nil {
+		zap.L().Error("failed to send paused presence", zap.Error(err))
+	}
+
+	if sendErr != nil {
+		zap.L().Error("failed to send message", zap.Error(sendErr))
+		return ctx.JSON(http.StatusOK, map[string]string{"error": sendErr.Error()})
+	}
+
+	return ctx.JSON(http.StatusOK, map[string]string{"message": "sent"})
+}
+
+func (c *Chatwoot) sendTextMessage(ctx context.Context, instanceID string, jid types.JID, content string) error {
+	// Converte formatação do Chatwoot para WhatsApp
+	// Chatwoot usa: *bold*, _italic_, ~strikethrough~, `code`
+	// WhatsApp usa: *bold*, _italic_, ~strikethrough~, ```code```
+	
+	formattedContent := c.convertChatwootToWhatsAppFormatting(content)
+
+	_, err := c.whatsmiau.SendText(ctx, &whatsmiau.SendText{
+		InstanceID: instanceID,
+		RemoteJID:  jid,
+		Text:       formattedContent,
+	})
+
+	return err
+}
+
+func (c *Chatwoot) sendAttachments(ctx context.Context, instanceID string, jid types.JID, webhook *dto.ChatwootWebhookRequest) error {
+	for _, message := range webhook.Conversation.Messages {
+		for _, attachment := range message.Attachments {
+			var err error
+			
+			switch {
+			case strings.HasPrefix(attachment.FileType, "image/"):
+				err = c.sendImage(ctx, instanceID, jid, attachment.DataURL, webhook.Content)
+			
+			case strings.HasPrefix(attachment.FileType, "audio/"):
+				err = c.sendAudio(ctx, instanceID, jid, attachment.DataURL)
+			
+			default:
+				err = c.sendDocument(ctx, instanceID, jid, attachment.DataURL, webhook.Content, attachment.FileType)
+			}
+
+			if err != nil {
+				return err
+			}
+		}
+	}
+	
+	return nil
+}
+
+func (c *Chatwoot) sendImage(ctx context.Context, instanceID string, jid types.JID, imageURL, caption string) error {
+	_, err := c.whatsmiau.SendImage(ctx, &whatsmiau.SendImageRequest{
+		InstanceID: instanceID,
+		RemoteJID:  jid,
+		MediaURL:   imageURL,
+		Caption:    caption,
+	})
+	return err
+}
+
+func (c *Chatwoot) sendAudio(ctx context.Context, instanceID string, jid types.JID, audioURL string) error {
+	_, err := c.whatsmiau.SendAudio(ctx, &whatsmiau.SendAudioRequest{
+		InstanceID: instanceID,
+		RemoteJID:  jid,
+		AudioURL:   audioURL,
+	})
+	return err
+}
+
+func (c *Chatwoot) sendDocument(ctx context.Context, instanceID string, jid types.JID, documentURL, caption, mimetype string) error {
+	_, err := c.whatsmiau.SendDocument(ctx, &whatsmiau.SendDocumentRequest{
+		InstanceID: instanceID,
+		RemoteJID:  jid,
+		MediaURL:   documentURL,
+		Caption:    caption,
+		Mimetype:   mimetype,
+	})
+	return err
+}
+
+func (c *Chatwoot) getJIDFromWebhook(webhook *dto.ChatwootWebhookRequest) (types.JID, error) {
+	var identifier string
+
+	// Tenta pegar do meta.sender.identifier
+	if webhook.Conversation.Meta.Sender.Identifier != "" {
+		identifier = webhook.Conversation.Meta.Sender.Identifier
+	} else if webhook.Conversation.ContactInbox.SourceID != "" {
+		// Fallback: source_id
+		identifier = webhook.Conversation.ContactInbox.SourceID
+	} else if webhook.Conversation.Meta.Sender.PhoneNumber != "" {
+		// Fallback: phone_number
+		phoneNumber := strings.TrimPrefix(webhook.Conversation.Meta.Sender.PhoneNumber, "+")
+		identifier = fmt.Sprintf("%s@s.whatsapp.net", phoneNumber)
+	}
+
+	if identifier == "" {
+		return types.JID{}, fmt.Errorf("no identifier found in webhook")
+	}
+
+	// Parse JID
+	jid, err := types.ParseJID(identifier)
+	if err != nil {
+		return types.JID{}, fmt.Errorf("failed to parse JID: %w", err)
+	}
+
+	return jid, nil
+}
+
+func (c *Chatwoot) convertChatwootToWhatsAppFormatting(content string) string {
+	// Chatwoot -> WhatsApp conversions:
+	// **bold** -> *bold*
+	// *italic* -> _italic_
+	// ~~strikethrough~~ -> ~strikethrough~
+	// `code` -> ```code```
+
+	// Esta conversão precisa ser feita com cuidado para não conflitar
+	// Por enquanto, retorna como está pois os formatos são similares
+	
+	return content
 }
