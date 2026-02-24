@@ -89,7 +89,7 @@ func (c *Chatwoot) handleTypingOn(ctx echo.Context, instanceName string, webhook
 
 	if err := c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
 		InstanceID: instanceID,
-		RemoteJID:  &jid,
+		RemoteJID:  jid,
 		Presence:   types.ChatPresenceComposing,
 	}); err != nil {
 		zap.L().Error("failed to send typing presence", zap.Error(err))
@@ -113,7 +113,7 @@ func (c *Chatwoot) handleTypingOff(ctx echo.Context, instanceName string, webhoo
 
 	if err := c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
 		InstanceID: instanceID,
-		RemoteJID:  &jid,
+		RemoteJID:  jid,
 		Presence:   types.ChatPresencePaused,
 	}); err != nil {
 		zap.L().Error("failed to send paused presence", zap.Error(err))
@@ -138,7 +138,7 @@ func (c *Chatwoot) handleOutgoingMessage(ctx echo.Context, instanceName string, 
 	// 1. Marca presença como "composing"
 	if err := c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
 		InstanceID: instanceID,
-		RemoteJID:  &jid,
+		RemoteJID:  jid,
 		Presence:   types.ChatPresenceComposing,
 	}); err != nil {
 		zap.L().Error("failed to send composing presence", zap.Error(err))
@@ -158,16 +158,16 @@ func (c *Chatwoot) handleOutgoingMessage(ctx echo.Context, instanceName string, 
 	
 	// Verifica se tem anexos
 	if len(webhook.Conversation.Messages) > 0 && len(webhook.Conversation.Messages[0].Attachments) > 0 {
-		sendErr = c.sendAttachments(requestContext, instanceID, &jid, webhook)
+		sendErr = c.sendAttachments(requestContext, instanceID, jid, webhook)
 	} else if webhook.Content != "" {
 		// Envia texto
-		sendErr = c.sendTextMessage(requestContext, instanceID, &jid, webhook.Content)
+		sendErr = c.sendTextMessage(requestContext, instanceID, jid, webhook.Content)
 	}
 
 	// 3. Remove presença (paused)
 	if err := c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
 		InstanceID: instanceID,
-		RemoteJID:  &jid,
+		RemoteJID:  jid,
 		Presence:   types.ChatPresencePaused,
 	}); err != nil {
 		zap.L().Error("failed to send paused presence", zap.Error(err))
@@ -196,32 +196,32 @@ func (c *Chatwoot) getInstanceID(ctx context.Context, instanceName string) (stri
 	return instances[0].ID, nil
 }
 
-func (c *Chatwoot) sendTextMessage(ctx context.Context, instanceID string, jid *types.JID, content string) error {
+func (c *Chatwoot) sendTextMessage(ctx context.Context, instanceID string, jid types.JID, content string) error {
 	formattedContent := c.convertChatwootToWhatsAppFormatting(content)
 
 	_, err := c.whatsmiau.SendText(ctx, &whatsmiau.SendText{
 		InstanceID: instanceID,
-		RemoteJID:  *jid,
+		RemoteJID:  jid,
 		Text:       formattedContent,
 	})
 
 	return err
 }
 
-func (c *Chatwoot) sendAttachments(ctx context.Context, instanceID string, jid *types.JID, webhook *dto.ChatwootWebhookRequest) error {
+func (c *Chatwoot) sendAttachments(ctx context.Context, instanceID string, jid types.JID, webhook *dto.ChatwootWebhookRequest) error {
 	for _, message := range webhook.Conversation.Messages {
 		for _, attachment := range message.Attachments {
 			var err error
 			
 			switch {
 			case strings.HasPrefix(attachment.FileType, "image/"):
-				err = c.sendImage(ctx, instanceID, *jid, attachment.DataURL, webhook.Content)
+				err = c.sendImage(ctx, instanceID, jid, attachment.DataURL, webhook.Content)
 			
 			case strings.HasPrefix(attachment.FileType, "audio/"):
-				err = c.sendAudio(ctx, instanceID, *jid, attachment.DataURL)
+				err = c.sendAudio(ctx, instanceID, jid, attachment.DataURL)
 			
 			default:
-				err = c.sendDocument(ctx, instanceID, *jid, attachment.DataURL, webhook.Content, attachment.FileType)
+				err = c.sendDocument(ctx, instanceID, jid, attachment.DataURL, webhook.Content, attachment.FileType)
 			}
 
 			if err != nil {
