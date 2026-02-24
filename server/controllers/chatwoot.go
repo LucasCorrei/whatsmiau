@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 	"github.com/labstack/echo/v4"
-	"whatsmiau" // ajuste para seu pacote real do WhatsMiau
+	"github.com/verbeux-ai/whatsmiau/lib/whatsmiau"
 )
 
 // Struct para receber o webhook do Chatwoot
