@@ -65,7 +65,6 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 		return c.handleTypingOff(ctx, instanceName, &webhook)
 	
 	case "message_updated":
-		// Pode ser implementado para editar/deletar mensagens
 		zap.L().Debug("message_updated event received", zap.Int64("message_id", webhook.ID))
 	
 	default:
@@ -82,16 +81,15 @@ func (c *Chatwoot) handleTypingOn(ctx echo.Context, instanceName string, webhook
 		return ctx.JSON(http.StatusOK, map[string]string{"message": "invalid jid"})
 	}
 
-	// Busca instância usando o método correto do seu repositório
-	instance, err := c.repo.Find(ctx.Request().Context(), instanceName)
+	instanceID, err := c.getInstanceID(ctx.Request().Context(), instanceName)
 	if err != nil {
 		zap.L().Error("instance not found", zap.Error(err), zap.String("instance", instanceName))
 		return ctx.JSON(http.StatusOK, map[string]string{"message": "instance not found"})
 	}
 
 	if err := c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
-		InstanceID: instance.ID,
-		RemoteJID:  jid,
+		InstanceID: instanceID,
+		RemoteJID:  &jid,
 		Presence:   types.ChatPresenceComposing,
 	}); err != nil {
 		zap.L().Error("failed to send typing presence", zap.Error(err))
@@ -107,15 +105,15 @@ func (c *Chatwoot) handleTypingOff(ctx echo.Context, instanceName string, webhoo
 		return ctx.JSON(http.StatusOK, map[string]string{"message": "invalid jid"})
 	}
 
-	instance, err := c.repo.Find(ctx.Request().Context(), instanceName)
+	instanceID, err := c.getInstanceID(ctx.Request().Context(), instanceName)
 	if err != nil {
 		zap.L().Error("instance not found", zap.Error(err))
 		return ctx.JSON(http.StatusOK, map[string]string{"message": "instance not found"})
 	}
 
 	if err := c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
-		InstanceID: instance.ID,
-		RemoteJID:  jid,
+		InstanceID: instanceID,
+		RemoteJID:  &jid,
 		Presence:   types.ChatPresencePaused,
 	}); err != nil {
 		zap.L().Error("failed to send paused presence", zap.Error(err))
@@ -131,7 +129,7 @@ func (c *Chatwoot) handleOutgoingMessage(ctx echo.Context, instanceName string, 
 		return ctx.JSON(http.StatusOK, map[string]string{"error": "invalid jid"})
 	}
 
-	instance, err := c.repo.Find(ctx.Request().Context(), instanceName)
+	instanceID, err := c.getInstanceID(ctx.Request().Context(), instanceName)
 	if err != nil {
 		zap.L().Error("instance not found", zap.Error(err))
 		return ctx.JSON(http.StatusOK, map[string]string{"error": "instance not found"})
@@ -139,15 +137,19 @@ func (c *Chatwoot) handleOutgoingMessage(ctx echo.Context, instanceName string, 
 
 	// 1. Marca presença como "composing"
 	if err := c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
-		InstanceID: instance.ID,
-		RemoteJID:  jid,
+		InstanceID: instanceID,
+		RemoteJID:  &jid,
 		Presence:   types.ChatPresenceComposing,
 	}); err != nil {
 		zap.L().Error("failed to send composing presence", zap.Error(err))
 	}
 
 	// Delay simulando digitação (500-2000ms)
-	time.Sleep(time.Millisecond * time.Duration(500+len(webhook.Content)))
+	delayMs := 500 + len(webhook.Content)
+	if delayMs > 2000 {
+		delayMs = 2000
+	}
+	time.Sleep(time.Millisecond * time.Duration(delayMs))
 
 	requestContext := ctx.Request().Context()
 
@@ -156,16 +158,16 @@ func (c *Chatwoot) handleOutgoingMessage(ctx echo.Context, instanceName string, 
 	
 	// Verifica se tem anexos
 	if len(webhook.Conversation.Messages) > 0 && len(webhook.Conversation.Messages[0].Attachments) > 0 {
-		sendErr = c.sendAttachments(requestContext, instance.ID, jid, webhook)
+		sendErr = c.sendAttachments(requestContext, instanceID, &jid, webhook)
 	} else if webhook.Content != "" {
 		// Envia texto
-		sendErr = c.sendTextMessage(requestContext, instance.ID, jid, webhook.Content)
+		sendErr = c.sendTextMessage(requestContext, instanceID, &jid, webhook.Content)
 	}
 
 	// 3. Remove presença (paused)
 	if err := c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
-		InstanceID: instance.ID,
-		RemoteJID:  jid,
+		InstanceID: instanceID,
+		RemoteJID:  &jid,
 		Presence:   types.ChatPresencePaused,
 	}); err != nil {
 		zap.L().Error("failed to send paused presence", zap.Error(err))
@@ -179,36 +181,47 @@ func (c *Chatwoot) handleOutgoingMessage(ctx echo.Context, instanceName string, 
 	return ctx.JSON(http.StatusOK, map[string]string{"message": "sent"})
 }
 
-func (c *Chatwoot) sendTextMessage(ctx context.Context, instanceID string, jid types.JID, content string) error {
-	// Converte formatação do Chatwoot para WhatsApp
-	// Chatwoot usa: *bold*, _italic_, ~strikethrough~, `code`
-	// WhatsApp usa: *bold*, _italic_, ~strikethrough~, ```code```
-	
+// getInstanceID busca o ID da instância usando o método List do repositório
+func (c *Chatwoot) getInstanceID(ctx context.Context, instanceName string) (string, error) {
+	instances, err := c.repo.List(ctx, instanceName)
+	if err != nil {
+		return "", fmt.Errorf("failed to list instances: %w", err)
+	}
+
+	if len(instances) == 0 {
+		return "", fmt.Errorf("instance %s not found", instanceName)
+	}
+
+	// Retorna o ID da primeira instância encontrada
+	return instances[0].ID, nil
+}
+
+func (c *Chatwoot) sendTextMessage(ctx context.Context, instanceID string, jid *types.JID, content string) error {
 	formattedContent := c.convertChatwootToWhatsAppFormatting(content)
 
 	_, err := c.whatsmiau.SendText(ctx, &whatsmiau.SendText{
 		InstanceID: instanceID,
-		RemoteJID:  jid,
+		RemoteJID:  *jid,
 		Text:       formattedContent,
 	})
 
 	return err
 }
 
-func (c *Chatwoot) sendAttachments(ctx context.Context, instanceID string, jid types.JID, webhook *dto.ChatwootWebhookRequest) error {
+func (c *Chatwoot) sendAttachments(ctx context.Context, instanceID string, jid *types.JID, webhook *dto.ChatwootWebhookRequest) error {
 	for _, message := range webhook.Conversation.Messages {
 		for _, attachment := range message.Attachments {
 			var err error
 			
 			switch {
 			case strings.HasPrefix(attachment.FileType, "image/"):
-				err = c.sendImage(ctx, instanceID, jid, attachment.DataURL, webhook.Content)
+				err = c.sendImage(ctx, instanceID, *jid, attachment.DataURL, webhook.Content)
 			
 			case strings.HasPrefix(attachment.FileType, "audio/"):
-				err = c.sendAudio(ctx, instanceID, jid, attachment.DataURL)
+				err = c.sendAudio(ctx, instanceID, *jid, attachment.DataURL)
 			
 			default:
-				err = c.sendDocument(ctx, instanceID, jid, attachment.DataURL, webhook.Content, attachment.FileType)
+				err = c.sendDocument(ctx, instanceID, *jid, attachment.DataURL, webhook.Content, attachment.FileType)
 			}
 
 			if err != nil {
@@ -257,10 +270,8 @@ func (c *Chatwoot) getJIDFromWebhook(webhook *dto.ChatwootWebhookRequest) (types
 	if webhook.Conversation.Meta.Sender.Identifier != "" {
 		identifier = webhook.Conversation.Meta.Sender.Identifier
 	} else if webhook.Conversation.ContactInbox.SourceID != "" {
-		// Fallback: source_id
 		identifier = webhook.Conversation.ContactInbox.SourceID
 	} else if webhook.Conversation.Meta.Sender.PhoneNumber != "" {
-		// Fallback: phone_number
 		phoneNumber := strings.TrimPrefix(webhook.Conversation.Meta.Sender.PhoneNumber, "+")
 		identifier = fmt.Sprintf("%s@s.whatsapp.net", phoneNumber)
 	}
@@ -269,7 +280,6 @@ func (c *Chatwoot) getJIDFromWebhook(webhook *dto.ChatwootWebhookRequest) (types
 		return types.JID{}, fmt.Errorf("no identifier found in webhook")
 	}
 
-	// Parse JID
 	jid, err := types.ParseJID(identifier)
 	if err != nil {
 		return types.JID{}, fmt.Errorf("failed to parse JID: %w", err)
@@ -279,14 +289,11 @@ func (c *Chatwoot) getJIDFromWebhook(webhook *dto.ChatwootWebhookRequest) (types
 }
 
 func (c *Chatwoot) convertChatwootToWhatsAppFormatting(content string) string {
-	// Chatwoot -> WhatsApp conversions:
-	// **bold** -> *bold*
-	// *italic* -> _italic_
-	// ~~strikethrough~~ -> ~strikethrough~
-	// `code` -> ```code```
-
-	// Esta conversão precisa ser feita com cuidado para não conflitar
-	// Por enquanto, retorna como está pois os formatos são similares
+	// Converte **bold** do Chatwoot para *bold* do WhatsApp
+	content = strings.ReplaceAll(content, "**", "*")
+	
+	// Converte `code` para ```code```
+	// TODO: Implementar conversão mais robusta de markdown
 	
 	return content
 }
