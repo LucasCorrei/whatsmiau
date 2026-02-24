@@ -44,11 +44,12 @@ type Instance struct {
 	SQS *InstanceBroker `json:"sqs,omitempty"`
 
 	// ==============================
-	// CHATWOOT (FLAT IGUAL EVOLUTION)
+	// CHATWOOT (COMPATÍVEL COM EVOLUTION API)
 	// ==============================
-	ChatwootAccountId             int    `json:"chatwootAccountId,omitempty"`
+	ChatwootEnabled               bool   `json:"chatwootEnabled,omitempty"`               // ADICIONADO
+	ChatwootAccountID             int    `json:"chatwootAccountId,omitempty"`             // Corrigido nome
 	ChatwootToken                 string `json:"chatwootToken,omitempty"`
-	ChatwootUrl                   string `json:"chatwootUrl,omitempty"`
+	ChatwootURL                   string `json:"chatwootUrl,omitempty"`                   // Corrigido nome
 	ChatwootSignMsg               bool   `json:"chatwootSignMsg,omitempty"`
 	ChatwootReopenConversation    bool   `json:"chatwootReopenConversation,omitempty"`
 	ChatwootConversationPending   bool   `json:"chatwootConversationPending,omitempty"`
@@ -59,14 +60,16 @@ type Instance struct {
 	ChatwootDaysLimitImportMsg    int    `json:"chatwootDaysLimitImportMessages,omitempty"`
 	ChatwootOrganization          string `json:"chatwootOrganization,omitempty"`
 	ChatwootLogo                  string `json:"chatwootLogo,omitempty"`
+	ChatwootInboxID               string `json:"chatwootInboxId,omitempty"`               // ADICIONADO - ID da inbox criada
+	ChatwootContactInboxID        string `json:"chatwootContactInboxId,omitempty"`        // ADICIONADO - ID do contact inbox
 }
 
 type InstanceWebhook struct {
-	URL     string            `json:"url,omitempty"`
-	ByEvents bool             `json:"byEvents,omitempty"`
-	Base64  bool              `json:"base64,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
-	Events  []string          `json:"events,omitempty"`
+	URL      string            `json:"url,omitempty"`
+	ByEvents bool              `json:"byEvents,omitempty"`
+	Base64   bool              `json:"base64,omitempty"`
+	Headers  map[string]string `json:"headers,omitempty"`
+	Events   []string          `json:"events,omitempty"`
 }
 
 type InstanceBroker struct {
