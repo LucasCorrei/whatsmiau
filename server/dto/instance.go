@@ -16,23 +16,23 @@ type UpdateInstanceRequest struct {
 	ID string `json:"id,omitempty" param:"id" validate:"required"`
 
 	// ==============================
-	// WEBHOOK
+	// WEBHOOK - Usando ponteiros conforme padrão do projeto
 	// ==============================
 	Webhook *struct {
-		Base64   bool              `json:"base64,omitempty"`
-		URL      string            `json:"url,omitempty"`
-		ByEvents bool              `json:"byEvents,omitempty"`
+		Url      string            `json:"url,omitempty"`      // "Url" (padrão do projeto)
+		ByEvents *bool             `json:"byEvents,omitempty"` // Ponteiro
+		Base64   *bool             `json:"base64,omitempty"`   // Ponteiro
 		Headers  map[string]string `json:"headers,omitempty"`
 		Events   []string          `json:"events,omitempty"`
 	} `json:"webhook,omitempty"`
 
 	// ==============================
-	// CHATWOOT - ADICIONADO COMPLETO
+	// CHATWOOT - ADICIONADO
 	// ==============================
 	ChatwootEnabled               *bool   `json:"chatwootEnabled,omitempty"`
-	ChatwootAccountID             *int    `json:"chatwootAccountId,omitempty"`
+	ChatwootAccountId             *int    `json:"chatwootAccountId,omitempty"`
 	ChatwootToken                 *string `json:"chatwootToken,omitempty"`
-	ChatwootURL                   *string `json:"chatwootUrl,omitempty"`
+	ChatwootUrl                   *string `json:"chatwootUrl,omitempty"` // "Url" (padrão do projeto)
 	ChatwootSignMsg               *bool   `json:"chatwootSignMsg,omitempty"`
 	ChatwootReopenConversation    *bool   `json:"chatwootReopenConversation,omitempty"`
 	ChatwootConversationPending   *bool   `json:"chatwootConversationPending,omitempty"`
@@ -40,7 +40,7 @@ type UpdateInstanceRequest struct {
 	ChatwootNameInbox             *string `json:"chatwootNameInbox,omitempty"`
 	ChatwootMergeBrazilContacts   *bool   `json:"chatwootMergeBrazilContacts,omitempty"`
 	ChatwootImportMessages        *bool   `json:"chatwootImportMessages,omitempty"`
-	ChatwootDaysLimitImportMsg    *int    `json:"chatwootDaysLimitImportMessages,omitempty"`
+	ChatwootDaysLimitImportMessages *int  `json:"chatwootDaysLimitImportMessages,omitempty"`
 	ChatwootOrganization          *string `json:"chatwootOrganization,omitempty"`
 	ChatwootLogo                  *string `json:"chatwootLogo,omitempty"`
 
