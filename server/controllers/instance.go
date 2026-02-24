@@ -35,6 +35,7 @@ func NewInstances(repository interfaces.InstanceRepository, whatsmiau *whatsmiau
 
 func (s *Instance) Create(ctx echo.Context) error {
 	var request dto.CreateInstanceRequest
+
 	if err := ctx.Bind(&request); err != nil {
 		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
 	}
@@ -43,17 +44,35 @@ func (s *Instance) Create(ctx echo.Context) error {
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
 	}
 
-	request.ID = request.InstanceName
-	if request.Instance == nil {
-		request.Instance = &models.Instance{
-			ID: request.InstanceName,
-		}
-	} else {
-		request.Instance.ID = request.InstanceName
-	}
-	request.RemoteJID = ""
+	// =============================
+	// Resolver ID da instância
+	// =============================
 
-	if len(request.ProxyHost) <= 0 && len(env.Env.ProxyAddresses) > 0 {
+	instanceID := request.InstanceName
+	if instanceID == "" {
+		instanceID = request.ID
+	}
+
+	if instanceID == "" {
+		return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "instanceName is required")
+	}
+
+	// =============================
+	// Garantir struct Instance
+	// =============================
+
+	if request.Instance == nil {
+		request.Instance = &models.Instance{}
+	}
+
+	request.Instance.ID = instanceID
+	request.Instance.RemoteJID = ""
+
+	// =============================
+	// Proxy automático (se não informado)
+	// =============================
+
+	if request.Instance.ProxyHost == "" && len(env.Env.ProxyAddresses) > 0 {
 		rd := rand.IntN(len(env.Env.ProxyAddresses))
 		proxyUrl := env.Env.ProxyAddresses[rd]
 
@@ -61,11 +80,15 @@ func (s *Instance) Create(ctx echo.Context) error {
 		if err != nil {
 			return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "invalid proxy url on env")
 		}
-		request.InstanceProxy = *proxy
+
+		request.Instance.InstanceProxy = *proxy
 	}
 
-	c := ctx.Request().Context()
-	if err := s.repo.Create(c, request.Instance); err != nil {
+	// =============================
+	// Salvar no repositório
+	// =============================
+
+	if err := s.repo.Create(ctx.Request().Context(), request.Instance); err != nil {
 		zap.L().Error("failed to create instance", zap.Error(err))
 		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to create instance")
 	}
