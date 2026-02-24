@@ -39,7 +39,9 @@ func (h *ChatwootWebhook) Handle(ctx echo.Context) error {
 
 	event, _ := payload["event"].(string)
 
+	// =============================
 	// Extrair telefone
+	// =============================
 	conversation, _ := payload["conversation"].(map[string]interface{})
 	contact, _ := conversation["contact"].(map[string]interface{})
 	phoneRaw, _ := contact["phone_number"].(string)
@@ -49,7 +51,16 @@ func (h *ChatwootWebhook) Handle(ctx echo.Context) error {
 	}
 
 	phone := normalizePhone(phoneRaw)
-	jid := phone + "@s.whatsapp.net"
+	jidString := phone + "@s.whatsapp.net"
+
+	// 🔥 CORREÇÃO AQUI
+	jidParsed, err := types.ParseJID(jidString)
+	if err != nil {
+		zap.L().Error("invalid jid", zap.Error(err))
+		return ctx.JSON(http.StatusBadRequest, map[string]string{
+			"error": "invalid jid",
+		})
+	}
 
 	switch event {
 
@@ -59,14 +70,14 @@ func (h *ChatwootWebhook) Handle(ctx echo.Context) error {
 	case "conversation_typing_on":
 		return h.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
 			InstanceID: instanceID,
-			RemoteJID:  jid,
+			RemoteJID:  &jidParsed,
 			Presence:   types.ChatPresenceComposing,
 		})
 
 	case "conversation_typing_off":
 		return h.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
 			InstanceID: instanceID,
-			RemoteJID:  jid,
+			RemoteJID:  &jidParsed,
 			Presence:   types.ChatPresencePaused,
 		})
 
@@ -94,7 +105,7 @@ func (h *ChatwootWebhook) Handle(ctx echo.Context) error {
 			_, err := h.whatsmiau.SendText(ctx.Request().Context(), &whatsmiau.SendText{
 				Text:       content,
 				InstanceID: instanceID,
-				RemoteJID:  jid,
+				RemoteJID:  &jidParsed,
 			})
 
 			if err != nil {
@@ -126,7 +137,7 @@ func (h *ChatwootWebhook) Handle(ctx echo.Context) error {
 				_, err := h.whatsmiau.SendAudio(ctx.Request().Context(), &whatsmiau.SendAudioRequest{
 					AudioURL:   fileURL,
 					InstanceID: instanceID,
-					RemoteJID:  jid,
+					RemoteJID:  &jidParsed,
 				})
 				if err != nil {
 					zap.L().Error("SendAudio failed", zap.Error(err))
@@ -137,7 +148,7 @@ func (h *ChatwootWebhook) Handle(ctx echo.Context) error {
 				_, err := h.whatsmiau.SendImage(ctx.Request().Context(), &whatsmiau.SendImageRequest{
 					MediaURL:   fileURL,
 					InstanceID: instanceID,
-					RemoteJID:  jid,
+					RemoteJID:  &jidParsed,
 				})
 				if err != nil {
 					zap.L().Error("SendImage failed", zap.Error(err))
@@ -148,7 +159,7 @@ func (h *ChatwootWebhook) Handle(ctx echo.Context) error {
 				_, err := h.whatsmiau.SendDocument(ctx.Request().Context(), &whatsmiau.SendDocumentRequest{
 					MediaURL:   fileURL,
 					InstanceID: instanceID,
-					RemoteJID:  jid,
+					RemoteJID:  &jidParsed,
 					Mimetype:   fileType,
 				})
 				if err != nil {
