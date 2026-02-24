@@ -1,8 +1,9 @@
 package controllers
 
 import (
-	"net/http"
 	"fmt"
+	"net/http"
+
 	"github.com/labstack/echo/v4"
 	"github.com/verbeux-ai/whatsmiau/interfaces"
 	"github.com/verbeux-ai/whatsmiau/lib/whatsmiau"
@@ -25,12 +26,9 @@ func NewChatwoot(repository interfaces.InstanceRepository, whatsmiau *whatsmiau.
 // Estrutura do webhook Chatwoot
 // =============================
 type ChatwootWebhook struct {
-	Event             string `json:"event"`
-	MessageType       string `json:"message_type"`
-	Content           string `json:"content"`
-	ContentAttributes struct {
-		InReplyTo int `json:"in_reply_to"`
-	} `json:"content_attributes"`
+	Event       string `json:"event"`
+	MessageType string `json:"message_type"`
+	Content     string `json:"content"`
 
 	Attachments []struct {
 		FileType string `json:"file_type"`
@@ -44,6 +42,12 @@ type ChatwootWebhook struct {
 			} `json:"sender"`
 		} `json:"meta"`
 	} `json:"conversation"`
+
+	// Reactions
+	Reaction struct {
+		Emoji        string `json:"emoji"`
+		ExternalID   string `json:"in_reply_to_external_id"`
+	} `json:"reaction"`
 }
 
 // =============================
@@ -94,6 +98,9 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 	// =============================
 	switch payload.Event {
 
+	// =============================
+	// Digitando ON
+	// =============================
 	case "conversation_typing_on":
 		_ = c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
 			InstanceID: instanceID,
@@ -101,6 +108,9 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 			Presence:   types.ChatPresenceComposing,
 		})
 
+	// =============================
+	// Digitando OFF
+	// =============================
 	case "conversation_typing_off":
 		_ = c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
 			InstanceID: instanceID,
@@ -108,6 +118,9 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 			Presence:   types.ChatPresencePaused,
 		})
 
+	// =============================
+	// Nova mensagem
+	// =============================
 	case "message_created":
 
 		// Só envia se for mensagem do agente
@@ -115,25 +128,6 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 			return ctx.JSON(http.StatusOK, map[string]string{
 				"status": "ignored",
 			})
-		}
-
-		// =============================
-		// REACTION
-		// =============================
-		if payload.ContentAttributes.InReplyTo > 0 && payload.Content != "" {
-			_, err := c.whatsmiau.SendReaction(ctx.Request().Context(), &whatsmiau.SendReactionRequest{
-				InstanceID: instanceID,
-				RemoteJID:  &jid,
-				MessageID:  fmt.Sprintf("%d", payload.ContentAttributes.InReplyTo),
-				Reaction:   payload.Content,
-				FromMe:     true,
-			})
-			if err != nil {
-				return ctx.JSON(http.StatusInternalServerError, map[string]string{
-					"error": "failed to send reaction",
-				})
-			}
-			return ctx.JSON(http.StatusOK, map[string]string{"status": "reaction_sent"})
 		}
 
 		// =============================
@@ -197,6 +191,21 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 						"error": "failed to send document",
 					})
 				}
+			}
+		}
+
+		// =============================
+		// REACTION
+		// =============================
+		if payload.Reaction.Emoji != "" && payload.Reaction.ExternalID != "" {
+			_, err := c.whatsmiau.SendReaction(ctx.Request().Context(), &whatsmiau.SendReactionRequest{
+				InstanceID: instanceID,
+				RemoteJID:  &jid,
+				Emoji:      payload.Reaction.Emoji,
+				MessageID:  payload.Reaction.ExternalID, // in_reply_to_external_id
+			})
+			if err != nil {
+				fmt.Printf("failed to send reaction: %v\n", err)
 			}
 		}
 	}
