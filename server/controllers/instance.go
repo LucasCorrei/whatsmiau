@@ -9,7 +9,6 @@ import (
 	"github.com/verbeux-ai/whatsmiau/env"
 	"github.com/verbeux-ai/whatsmiau/lib/whatsmiau"
 	"github.com/verbeux-ai/whatsmiau/models"
-	"github.com/verbeux-ai/whatsmiau/repositories/instances"
 	"go.mau.fi/whatsmeow/types"
 
 	"github.com/go-playground/validator/v10"
@@ -83,13 +82,13 @@ func (s *Instance) Create(ctx echo.Context) error {
 	// ==============================
 	if request.Instance.ChatwootEnabled {
 		// Validação: verificar se os campos obrigatórios estão preenchidos
-		if request.Instance.ChatwootURL == "" {
+		if request.Instance.ChatwootUrl == "" {
 			return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "chatwootUrl is required when chatwoot is enabled")
 		}
 		if request.Instance.ChatwootToken == "" {
 			return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "chatwootToken is required when chatwoot is enabled")
 		}
-		if request.Instance.ChatwootAccountID == 0 {
+		if request.Instance.ChatwootAccountId == 0 {
 			return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "chatwootAccountId is required when chatwoot is enabled")
 		}
 
@@ -99,17 +98,17 @@ func (s *Instance) Create(ctx echo.Context) error {
 			zap.L().Error("failed to ensure chatwoot inbox", 
 				zap.Error(err),
 				zap.String("instance", instanceID),
-				zap.String("chatwootUrl", request.Instance.ChatwootURL),
+				zap.String("chatwootUrl", request.Instance.ChatwootUrl),
 			)
 			return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to ensure chatwoot inbox")
 		}
 		
-		request.Instance.ChatwootInboxID = inboxID
+		request.Instance.ChatwootInboxId = inboxID
 		
 		zap.L().Info("chatwoot inbox created/verified",
 			zap.String("instance", instanceID),
 			zap.String("inboxId", inboxID),
-			zap.String("chatwootUrl", request.Instance.ChatwootURL),
+			zap.String("chatwootUrl", request.Instance.ChatwootUrl),
 		)
 	}
 
@@ -135,11 +134,16 @@ func (s *Instance) Update(ctx echo.Context) error {
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
 	}
 
-	// Buscar instância existente
-	instance, err := s.repo.GetByID(ctx.Request().Context(), request.ID)
+	// Buscar instância existente usando List (padrão do projeto)
+	instances, err := s.repo.List(ctx.Request().Context(), request.ID)
 	if err != nil {
-		return utils.HTTPFail(ctx, http.StatusNotFound, err, "instance not found")
+		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to get instance")
 	}
+	if len(instances) == 0 {
+		return utils.HTTPFail(ctx, http.StatusNotFound, nil, "instance not found")
+	}
+
+	instance := instances[0]
 
 	// ==============================
 	// Atualizar WEBHOOK
@@ -148,14 +152,18 @@ func (s *Instance) Update(ctx echo.Context) error {
 		if instance.Webhook == nil {
 			instance.Webhook = &models.InstanceWebhook{}
 		}
-		if request.Webhook.URL != "" {
-			instance.Webhook.URL = request.Webhook.URL
+		if request.Webhook.Url != "" {
+			instance.Webhook.Url = request.Webhook.Url
 		}
 		if request.Webhook.Events != nil {
 			instance.Webhook.Events = request.Webhook.Events
 		}
-		instance.Webhook.Base64 = request.Webhook.Base64
-		instance.Webhook.ByEvents = request.Webhook.ByEvents
+		if request.Webhook.ByEvents != nil {
+			instance.Webhook.ByEvents = request.Webhook.ByEvents
+		}
+		if request.Webhook.Base64 != nil {
+			instance.Webhook.Base64 = request.Webhook.Base64
+		}
 		if request.Webhook.Headers != nil {
 			instance.Webhook.Headers = request.Webhook.Headers
 		}
@@ -196,16 +204,16 @@ func (s *Instance) Update(ctx echo.Context) error {
 		instance.ChatwootEnabled = *request.ChatwootEnabled
 		chatwootUpdated = true
 	}
-	if request.ChatwootURL != nil {
-		instance.ChatwootURL = *request.ChatwootURL
+	if request.ChatwootUrl != nil {
+		instance.ChatwootUrl = *request.ChatwootUrl
 		chatwootUpdated = true
 	}
 	if request.ChatwootToken != nil {
 		instance.ChatwootToken = *request.ChatwootToken
 		chatwootUpdated = true
 	}
-	if request.ChatwootAccountID != nil {
-		instance.ChatwootAccountID = *request.ChatwootAccountID
+	if request.ChatwootAccountId != nil {
+		instance.ChatwootAccountId = *request.ChatwootAccountId
 		chatwootUpdated = true
 	}
 	if request.ChatwootNameInbox != nil {
@@ -230,8 +238,8 @@ func (s *Instance) Update(ctx echo.Context) error {
 	if request.ChatwootImportMessages != nil {
 		instance.ChatwootImportMessages = *request.ChatwootImportMessages
 	}
-	if request.ChatwootDaysLimitImportMsg != nil {
-		instance.ChatwootDaysLimitImportMsg = *request.ChatwootDaysLimitImportMsg
+	if request.ChatwootDaysLimitImportMessages != nil {
+		instance.ChatwootDaysLimitImportMessages = *request.ChatwootDaysLimitImportMessages
 	}
 	if request.ChatwootOrganization != nil {
 		instance.ChatwootOrganization = *request.ChatwootOrganization
@@ -243,17 +251,17 @@ func (s *Instance) Update(ctx echo.Context) error {
 	// Se Chatwoot foi atualizado E está habilitado, recriar/verificar inbox
 	if chatwootUpdated && instance.ChatwootEnabled {
 		// Validação
-		if instance.ChatwootURL == "" {
+		if instance.ChatwootUrl == "" {
 			return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "chatwootUrl is required when chatwoot is enabled")
 		}
 		if instance.ChatwootToken == "" {
 			return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "chatwootToken is required when chatwoot is enabled")
 		}
-		if instance.ChatwootAccountID == 0 {
+		if instance.ChatwootAccountId == 0 {
 			return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "chatwootAccountId is required when chatwoot is enabled")
 		}
 
-		inboxID, err := s.whatsmiau.ChatwootService.EnsureInbox(instance)
+		inboxID, err := s.whatsmiau.ChatwootService.EnsureInbox(&instance)
 		if err != nil {
 			zap.L().Error("failed to ensure chatwoot inbox on update",
 				zap.Error(err),
@@ -261,7 +269,7 @@ func (s *Instance) Update(ctx echo.Context) error {
 			)
 			return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to ensure chatwoot inbox")
 		}
-		instance.ChatwootInboxID = inboxID
+		instance.ChatwootInboxId = inboxID
 
 		zap.L().Info("chatwoot inbox updated",
 			zap.String("instance", request.ID),
@@ -269,12 +277,13 @@ func (s *Instance) Update(ctx echo.Context) error {
 		)
 	}
 
-	// Salvar instância atualizada
-	if err := s.repo.Save(ctx.Request().Context(), instance); err != nil {
+	// Salvar instância atualizada usando Update do Redis (padrão do projeto)
+	updatedInstance, err := s.repo.Update(ctx.Request().Context(), request.ID, &instance)
+	if err != nil {
 		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to update instance")
 	}
 
 	return ctx.JSON(http.StatusOK, dto.UpdateInstanceResponse{
-		Instance: instance,
+		Instance: updatedInstance,
 	})
 }
