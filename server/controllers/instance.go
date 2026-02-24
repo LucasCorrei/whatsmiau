@@ -59,7 +59,9 @@ func (s *Instance) Create(ctx echo.Context) error {
 	request.Instance.ID = instanceID
 	request.Instance.RemoteJID = ""
 
+	// ==============================
 	// Proxy automático
+	// ==============================
 	if request.Instance.ProxyHost == "" && len(env.Env.ProxyAddresses) > 0 {
 		rd := rand.IntN(len(env.Env.ProxyAddresses))
 		proxyUrl := env.Env.ProxyAddresses[rd]
@@ -76,18 +78,42 @@ func (s *Instance) Create(ctx echo.Context) error {
 		request.Instance.ProxyPassword = proxy.Password
 	}
 
-	// =========================
-	// Chatwoot
-	// =========================
-
+	// ==============================
+	// CHATWOOT - Usando configs da INSTÂNCIA
+	// ==============================
 	if request.Instance.ChatwootEnabled {
+		// Validação: verificar se os campos obrigatórios estão preenchidos
+		if request.Instance.ChatwootURL == "" {
+			return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "chatwootUrl is required when chatwoot is enabled")
+		}
+		if request.Instance.ChatwootToken == "" {
+			return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "chatwootToken is required when chatwoot is enabled")
+		}
+		if request.Instance.ChatwootAccountID == 0 {
+			return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "chatwootAccountId is required when chatwoot is enabled")
+		}
+
+		// Criar/verificar inbox no Chatwoot usando as configurações DA INSTÂNCIA
 		inboxID, err := s.whatsmiau.ChatwootService.EnsureInbox(request.Instance)
 		if err != nil {
-			return utils.HTTPFail(ctx, 500, err, "failed to ensure chatwoot inbox")
+			zap.L().Error("failed to ensure chatwoot inbox", 
+				zap.Error(err),
+				zap.String("instance", instanceID),
+				zap.String("chatwootUrl", request.Instance.ChatwootURL),
+			)
+			return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to ensure chatwoot inbox")
 		}
+		
 		request.Instance.ChatwootInboxID = inboxID
+		
+		zap.L().Info("chatwoot inbox created/verified",
+			zap.String("instance", instanceID),
+			zap.String("inboxId", inboxID),
+			zap.String("chatwootUrl", request.Instance.ChatwootURL),
+		)
 	}
 
+	// Salvar instância no banco
 	if err := s.repo.Create(ctx.Request().Context(), request.Instance); err != nil {
 		zap.L().Error("failed to create instance", zap.Error(err))
 		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to create instance")
@@ -109,27 +135,143 @@ func (s *Instance) Update(ctx echo.Context) error {
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
 	}
 
+	// Buscar instância existente
 	instance, err := s.repo.GetByID(ctx.Request().Context(), request.ID)
 	if err != nil {
 		return utils.HTTPFail(ctx, http.StatusNotFound, err, "instance not found")
 	}
 
-	instance.ChatwootEnabled = request.ChatwootEnabled
-	instance.ChatwootURL = request.ChatwootURL
-	instance.ChatwootToken = request.ChatwootToken
-	instance.ChatwootAccountID = request.ChatwootAccountID
-	instance.ChatwootInboxName = request.ChatwootInboxName
-
-	if instance.ChatwootEnabled {
-		inboxID, err := s.whatsmiau.ChatwootService.EnsureInbox(instance)
-		if err != nil {
-			return utils.HTTPFail(ctx, 500, err, "failed to ensure chatwoot inbox")
+	// ==============================
+	// Atualizar WEBHOOK
+	// ==============================
+	if request.Webhook != nil {
+		if instance.Webhook == nil {
+			instance.Webhook = &models.InstanceWebhook{}
 		}
-		instance.ChatwootInboxID = inboxID
+		if request.Webhook.URL != "" {
+			instance.Webhook.URL = request.Webhook.URL
+		}
+		if request.Webhook.Events != nil {
+			instance.Webhook.Events = request.Webhook.Events
+		}
+		instance.Webhook.Base64 = request.Webhook.Base64
+		instance.Webhook.ByEvents = request.Webhook.ByEvents
+		if request.Webhook.Headers != nil {
+			instance.Webhook.Headers = request.Webhook.Headers
+		}
 	}
 
+	// ==============================
+	// Atualizar RABBITMQ
+	// ==============================
+	if request.RabbitMQ != nil {
+		if instance.RabbitMQ == nil {
+			instance.RabbitMQ = &models.InstanceBroker{}
+		}
+		instance.RabbitMQ.Enabled = request.RabbitMQ.Enabled
+		if request.RabbitMQ.Events != nil {
+			instance.RabbitMQ.Events = request.RabbitMQ.Events
+		}
+	}
+
+	// ==============================
+	// Atualizar SQS
+	// ==============================
+	if request.SQS != nil {
+		if instance.SQS == nil {
+			instance.SQS = &models.InstanceBroker{}
+		}
+		instance.SQS.Enabled = request.SQS.Enabled
+		if request.SQS.Events != nil {
+			instance.SQS.Events = request.SQS.Events
+		}
+	}
+
+	// ==============================
+	// Atualizar CHATWOOT - Usando ponteiros para detectar mudanças
+	// ==============================
+	chatwootUpdated := false
+
+	if request.ChatwootEnabled != nil {
+		instance.ChatwootEnabled = *request.ChatwootEnabled
+		chatwootUpdated = true
+	}
+	if request.ChatwootURL != nil {
+		instance.ChatwootURL = *request.ChatwootURL
+		chatwootUpdated = true
+	}
+	if request.ChatwootToken != nil {
+		instance.ChatwootToken = *request.ChatwootToken
+		chatwootUpdated = true
+	}
+	if request.ChatwootAccountID != nil {
+		instance.ChatwootAccountID = *request.ChatwootAccountID
+		chatwootUpdated = true
+	}
+	if request.ChatwootNameInbox != nil {
+		instance.ChatwootNameInbox = *request.ChatwootNameInbox
+		chatwootUpdated = true
+	}
+	if request.ChatwootSignMsg != nil {
+		instance.ChatwootSignMsg = *request.ChatwootSignMsg
+	}
+	if request.ChatwootReopenConversation != nil {
+		instance.ChatwootReopenConversation = *request.ChatwootReopenConversation
+	}
+	if request.ChatwootConversationPending != nil {
+		instance.ChatwootConversationPending = *request.ChatwootConversationPending
+	}
+	if request.ChatwootImportContacts != nil {
+		instance.ChatwootImportContacts = *request.ChatwootImportContacts
+	}
+	if request.ChatwootMergeBrazilContacts != nil {
+		instance.ChatwootMergeBrazilContacts = *request.ChatwootMergeBrazilContacts
+	}
+	if request.ChatwootImportMessages != nil {
+		instance.ChatwootImportMessages = *request.ChatwootImportMessages
+	}
+	if request.ChatwootDaysLimitImportMsg != nil {
+		instance.ChatwootDaysLimitImportMsg = *request.ChatwootDaysLimitImportMsg
+	}
+	if request.ChatwootOrganization != nil {
+		instance.ChatwootOrganization = *request.ChatwootOrganization
+	}
+	if request.ChatwootLogo != nil {
+		instance.ChatwootLogo = *request.ChatwootLogo
+	}
+
+	// Se Chatwoot foi atualizado E está habilitado, recriar/verificar inbox
+	if chatwootUpdated && instance.ChatwootEnabled {
+		// Validação
+		if instance.ChatwootURL == "" {
+			return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "chatwootUrl is required when chatwoot is enabled")
+		}
+		if instance.ChatwootToken == "" {
+			return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "chatwootToken is required when chatwoot is enabled")
+		}
+		if instance.ChatwootAccountID == 0 {
+			return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "chatwootAccountId is required when chatwoot is enabled")
+		}
+
+		inboxID, err := s.whatsmiau.ChatwootService.EnsureInbox(instance)
+		if err != nil {
+			zap.L().Error("failed to ensure chatwoot inbox on update",
+				zap.Error(err),
+				zap.String("instance", request.ID),
+			)
+			return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to ensure chatwoot inbox")
+		}
+		instance.ChatwootInboxID = inboxID
+
+		zap.L().Info("chatwoot inbox updated",
+			zap.String("instance", request.ID),
+			zap.String("inboxId", inboxID),
+		)
+	}
+
+	// Salvar instância atualizada
 	if err := s.repo.Save(ctx.Request().Context(), instance); err != nil {
-		return utils.HTTPFail(ctx, 500, err, "failed to update instance")
+		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to update instance")
 	}
 
 	return ctx.JSON(http.StatusOK, dto.UpdateInstanceResponse{
