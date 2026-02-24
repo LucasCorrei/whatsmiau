@@ -47,9 +47,9 @@ type Instance struct {
 	// CHATWOOT (COMPATÍVEL COM EVOLUTION API)
 	// ==============================
 	ChatwootEnabled               bool   `json:"chatwootEnabled,omitempty"`               // ADICIONADO
-	ChatwootAccountID             int    `json:"chatwootAccountId,omitempty"`             // Corrigido nome
+	ChatwootAccountId             int    `json:"chatwootAccountId,omitempty"`             // Mantido minúsculo (padrão Evolution)
 	ChatwootToken                 string `json:"chatwootToken,omitempty"`
-	ChatwootURL                   string `json:"chatwootUrl,omitempty"`                   // Corrigido nome
+	ChatwootUrl                   string `json:"chatwootUrl,omitempty"`                   // Mantido "Url" (padrão do projeto)
 	ChatwootSignMsg               bool   `json:"chatwootSignMsg,omitempty"`
 	ChatwootReopenConversation    bool   `json:"chatwootReopenConversation,omitempty"`
 	ChatwootConversationPending   bool   `json:"chatwootConversationPending,omitempty"`
@@ -57,17 +57,16 @@ type Instance struct {
 	ChatwootNameInbox             string `json:"chatwootNameInbox,omitempty"`
 	ChatwootMergeBrazilContacts   bool   `json:"chatwootMergeBrazilContacts,omitempty"`
 	ChatwootImportMessages        bool   `json:"chatwootImportMessages,omitempty"`
-	ChatwootDaysLimitImportMsg    int    `json:"chatwootDaysLimitImportMessages,omitempty"`
+	ChatwootDaysLimitImportMessages int  `json:"chatwootDaysLimitImportMessages,omitempty"` // Corrigido nome do campo
 	ChatwootOrganization          string `json:"chatwootOrganization,omitempty"`
 	ChatwootLogo                  string `json:"chatwootLogo,omitempty"`
-	ChatwootInboxID               string `json:"chatwootInboxId,omitempty"`               // ADICIONADO - ID da inbox criada
-	ChatwootContactInboxID        string `json:"chatwootContactInboxId,omitempty"`        // ADICIONADO - ID do contact inbox
+	ChatwootInboxId               string `json:"chatwootInboxId,omitempty"`               // ADICIONADO - ID da inbox criada
 }
 
 type InstanceWebhook struct {
-	URL      string            `json:"url,omitempty"`
-	ByEvents bool              `json:"byEvents,omitempty"`
-	Base64   bool              `json:"base64,omitempty"`
+	Url      string            `json:"url,omitempty"`      // "Url" com U maiúsculo (padrão do projeto)
+	ByEvents *bool             `json:"byEvents,omitempty"` // Ponteiro para permitir nil
+	Base64   *bool             `json:"base64,omitempty"`   // Ponteiro para permitir nil
 	Headers  map[string]string `json:"headers,omitempty"`
 	Events   []string          `json:"events,omitempty"`
 }
