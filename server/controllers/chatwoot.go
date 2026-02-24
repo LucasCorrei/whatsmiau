@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -81,8 +82,8 @@ func (c *Chatwoot) handleTypingOn(ctx echo.Context, instanceName string, webhook
 		return ctx.JSON(http.StatusOK, map[string]string{"message": "invalid jid"})
 	}
 
-	// Busca instância para pegar instanceID
-	instance, err := c.repo.Get(ctx.Request().Context(), instanceName)
+	// Busca instância usando o método correto do seu repositório
+	instance, err := c.repo.Find(ctx.Request().Context(), instanceName)
 	if err != nil {
 		zap.L().Error("instance not found", zap.Error(err), zap.String("instance", instanceName))
 		return ctx.JSON(http.StatusOK, map[string]string{"message": "instance not found"})
@@ -106,7 +107,7 @@ func (c *Chatwoot) handleTypingOff(ctx echo.Context, instanceName string, webhoo
 		return ctx.JSON(http.StatusOK, map[string]string{"message": "invalid jid"})
 	}
 
-	instance, err := c.repo.Get(ctx.Request().Context(), instanceName)
+	instance, err := c.repo.Find(ctx.Request().Context(), instanceName)
 	if err != nil {
 		zap.L().Error("instance not found", zap.Error(err))
 		return ctx.JSON(http.StatusOK, map[string]string{"message": "instance not found"})
@@ -130,7 +131,7 @@ func (c *Chatwoot) handleOutgoingMessage(ctx echo.Context, instanceName string, 
 		return ctx.JSON(http.StatusOK, map[string]string{"error": "invalid jid"})
 	}
 
-	instance, err := c.repo.Get(ctx.Request().Context(), instanceName)
+	instance, err := c.repo.Find(ctx.Request().Context(), instanceName)
 	if err != nil {
 		zap.L().Error("instance not found", zap.Error(err))
 		return ctx.JSON(http.StatusOK, map[string]string{"error": "instance not found"})
