@@ -44,22 +44,13 @@ func (s *Instance) Create(ctx echo.Context) error {
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
 	}
 
-	// =============================
-	// Resolver ID da instância
-	// =============================
-
 	instanceID := request.InstanceName
 	if instanceID == "" {
 		instanceID = request.ID
 	}
-
 	if instanceID == "" {
 		return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "instanceName is required")
 	}
-
-	// =============================
-	// Garantir struct Instance
-	// =============================
 
 	if request.Instance == nil {
 		request.Instance = &models.Instance{}
@@ -68,10 +59,7 @@ func (s *Instance) Create(ctx echo.Context) error {
 	request.Instance.ID = instanceID
 	request.Instance.RemoteJID = ""
 
-	// =============================
-	// Proxy automático (se não informado)
-	// =============================
-
+	// Proxy automático
 	if request.Instance.ProxyHost == "" && len(env.Env.ProxyAddresses) > 0 {
 		rd := rand.IntN(len(env.Env.ProxyAddresses))
 		proxyUrl := env.Env.ProxyAddresses[rd]
@@ -81,12 +69,24 @@ func (s *Instance) Create(ctx echo.Context) error {
 			return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "invalid proxy url on env")
 		}
 
-		request.Instance.InstanceProxy = *proxy
+		request.Instance.ProxyHost = proxy.Host
+		request.Instance.ProxyPort = proxy.Port
+		request.Instance.ProxyProtocol = proxy.Protocol
+		request.Instance.ProxyUsername = proxy.Username
+		request.Instance.ProxyPassword = proxy.Password
 	}
 
-	// =============================
-	// Salvar no repositório
-	// =============================
+	// =========================
+	// Chatwoot
+	// =========================
+
+	if request.Instance.ChatwootEnabled {
+		inboxID, err := s.whatsmiau.ChatwootService.EnsureInbox(request.Instance)
+		if err != nil {
+			return utils.HTTPFail(ctx, 500, err, "failed to ensure chatwoot inbox")
+		}
+		request.Instance.ChatwootInboxID = inboxID
+	}
 
 	if err := s.repo.Create(ctx.Request().Context(), request.Instance); err != nil {
 		zap.L().Error("failed to create instance", zap.Error(err))
@@ -100,6 +100,7 @@ func (s *Instance) Create(ctx echo.Context) error {
 
 func (s *Instance) Update(ctx echo.Context) error {
 	var request dto.UpdateInstanceRequest
+
 	if err := ctx.Bind(&request); err != nil {
 		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
 	}
@@ -108,230 +109,30 @@ func (s *Instance) Update(ctx echo.Context) error {
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
 	}
 
-	c := ctx.Request().Context()
-	instance, err := s.repo.Update(c, request.ID, &models.Instance{
-		ID: request.ID,
-		Webhook: models.InstanceWebhook{
-			Url:    request.Webhook.URL,
-			Base64: &[]bool{request.Webhook.Base64}[0],
-			Events: request.Webhook.Events,
-		},
-	})
+	instance, err := s.repo.GetByID(ctx.Request().Context(), request.ID)
 	if err != nil {
-		if errors.Is(err, instances.ErrorNotFound) {
-			return utils.HTTPFail(ctx, http.StatusNotFound, err, "instance not found")
-		}
-		zap.L().Error("failed to create instance", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to update instance")
+		return utils.HTTPFail(ctx, http.StatusNotFound, err, "instance not found")
 	}
 
-	return ctx.JSON(http.StatusCreated, dto.UpdateInstanceResponse{
+	instance.ChatwootEnabled = request.ChatwootEnabled
+	instance.ChatwootURL = request.ChatwootURL
+	instance.ChatwootToken = request.ChatwootToken
+	instance.ChatwootAccountID = request.ChatwootAccountID
+	instance.ChatwootInboxName = request.ChatwootInboxName
+
+	if instance.ChatwootEnabled {
+		inboxID, err := s.whatsmiau.ChatwootService.EnsureInbox(instance)
+		if err != nil {
+			return utils.HTTPFail(ctx, 500, err, "failed to ensure chatwoot inbox")
+		}
+		instance.ChatwootInboxID = inboxID
+	}
+
+	if err := s.repo.Save(ctx.Request().Context(), instance); err != nil {
+		return utils.HTTPFail(ctx, 500, err, "failed to update instance")
+	}
+
+	return ctx.JSON(http.StatusOK, dto.UpdateInstanceResponse{
 		Instance: instance,
-	})
-}
-
-func (s *Instance) List(ctx echo.Context) error {
-	c := ctx.Request().Context()
-	var request dto.ListInstancesRequest
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
-	}
-	if request.InstanceName == "" {
-		request.InstanceName = request.ID
-	}
-
-	result, err := s.repo.List(c, request.InstanceName)
-	if err != nil {
-		zap.L().Error("failed to list instances", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to list instances")
-	}
-
-	var response []dto.ListInstancesResponse
-	for _, instance := range result {
-		jid, err := types.ParseJID(instance.RemoteJID)
-		if err != nil {
-			zap.L().Error("failed to parse jid", zap.Error(err))
-		}
-
-		response = append(response, dto.ListInstancesResponse{
-			Instance:     &instance,
-			OwnerJID:     jid.ToNonAD().String(),
-			InstanceName: instance.ID,
-		})
-	}
-
-	if len(response) == 0 {
-		return ctx.JSON(http.StatusOK, []string{})
-	}
-
-	return ctx.JSON(http.StatusOK, response)
-}
-
-func (s *Instance) Connect(ctx echo.Context) error {
-	c := ctx.Request().Context()
-	var request dto.ConnectInstanceRequest
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
-	}
-
-	result, err := s.repo.List(c, request.ID)
-	if err != nil {
-		zap.L().Error("failed to list instances", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to list instances")
-	}
-
-	if len(result) == 0 {
-		return utils.HTTPFail(ctx, http.StatusNotFound, err, "instance not found")
-	}
-
-	qrCode, err := s.whatsmiau.Connect(c, request.ID)
-	if err != nil {
-		zap.L().Error("failed to connect instance", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to connect instance")
-	}
-	if qrCode != "" {
-		png, err := qrcode.Encode(qrCode, qrcode.Medium, 512)
-		if err != nil {
-			zap.L().Error("failed to encode qrcode", zap.Error(err))
-			return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to encode qrcode")
-		}
-		return ctx.JSON(http.StatusOK, dto.ConnectInstanceResponse{
-			Message:   "If instance restart this instance could be lost if you cannot connect",
-			Connected: false,
-			Base64:    "data:image/png;base64," + base64.StdEncoding.EncodeToString(png),
-		})
-	}
-
-	return ctx.JSON(http.StatusOK, dto.ConnectInstanceResponse{
-		Message:   "instance already connected",
-		Connected: true,
-	})
-}
-
-func (s *Instance) ConnectQRBuffer(ctx echo.Context) error {
-	c := ctx.Request().Context()
-	var request dto.ConnectInstanceRequest
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
-	}
-
-	result, err := s.repo.List(c, request.ID)
-	if err != nil {
-		zap.L().Error("failed to list instances", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to list instances")
-	}
-
-	if len(result) == 0 {
-		return utils.HTTPFail(ctx, http.StatusNotFound, err, "instance not found")
-	}
-
-	qrCode, err := s.whatsmiau.Connect(c, request.ID)
-	if err != nil {
-		zap.L().Error("failed to connect instance", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to connect instance")
-	}
-	if qrCode != "" {
-		png, err := qrcode.Encode(qrCode, qrcode.Medium, 256)
-		if err != nil {
-			zap.L().Error("failed to encode qrcode", zap.Error(err))
-			return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to encode qrcode")
-		}
-		return ctx.Blob(http.StatusOK, "image/png", png)
-	}
-
-	return ctx.NoContent(http.StatusOK)
-}
-
-func (s *Instance) Status(ctx echo.Context) error {
-	c := ctx.Request().Context()
-	var request dto.ConnectInstanceRequest
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
-	}
-
-	result, err := s.repo.List(c, request.ID)
-	if err != nil {
-		zap.L().Error("failed to list instances", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to list instances")
-	}
-
-	if len(result) == 0 {
-		return utils.HTTPFail(ctx, http.StatusNotFound, err, "instance not found")
-	}
-
-	status, err := s.whatsmiau.Status(request.ID)
-	if err != nil {
-		zap.L().Error("failed to get status instance", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to get status instance")
-	}
-
-	return ctx.JSON(http.StatusOK, dto.StatusInstanceResponse{
-		ID:     request.ID,
-		Status: string(status),
-		Instance: &dto.StatusInstanceResponseEvolutionCompatibility{
-			InstanceName: request.ID,
-			State:        string(status),
-		},
-	})
-}
-
-func (s *Instance) Logout(ctx echo.Context) error {
-	c := ctx.Request().Context()
-	var request dto.DeleteInstanceRequest
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
-	}
-
-	result, err := s.repo.List(c, request.ID)
-	if err != nil {
-		zap.L().Error("failed to list instances", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to list instances")
-	}
-
-	if len(result) == 0 {
-		return utils.HTTPFail(ctx, http.StatusNotFound, err, "instance not found")
-	}
-
-	if err := s.whatsmiau.Logout(c, request.ID); err != nil {
-		zap.L().Error("failed to logout instance", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to logout instance")
-	}
-
-	return ctx.JSON(http.StatusOK, dto.DeleteInstanceResponse{
-		Message: "instance logout successfully",
-	})
-}
-
-func (s *Instance) Delete(ctx echo.Context) error {
-	c := ctx.Request().Context()
-	var request dto.DeleteInstanceRequest
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
-	}
-
-	result, err := s.repo.List(c, request.ID)
-	if err != nil {
-		zap.L().Error("failed to list instances", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to list instances")
-	}
-
-	if len(result) == 0 {
-		return ctx.JSON(http.StatusOK, dto.DeleteInstanceResponse{
-			Message: "instance doesn't exists",
-		})
-	}
-
-	if err := s.whatsmiau.Logout(ctx.Request().Context(), request.ID); err != nil {
-		zap.L().Error("failed to disconnect instance", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to logout instance")
-	}
-
-	if err := s.repo.Delete(c, request.ID); err != nil {
-		zap.L().Error("failed to delete instance", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to delete instance")
-	}
-
-	return ctx.JSON(http.StatusOK, dto.DeleteInstanceResponse{
-		Message: "instance deleted",
 	})
 }
