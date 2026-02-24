@@ -25,9 +25,12 @@ func NewChatwoot(repository interfaces.InstanceRepository, whatsmiau *whatsmiau.
 // Estrutura do webhook Chatwoot
 // =============================
 type ChatwootWebhook struct {
-	Event       string `json:"event"`
-	MessageType string `json:"message_type"`
-	Content     string `json:"content"`
+	Event             string `json:"event"`
+	MessageType       string `json:"message_type"`
+	Content           string `json:"content"`
+	ContentAttributes struct {
+		InReplyTo int `json:"in_reply_to"`
+	} `json:"content_attributes"`
 
 	Attachments []struct {
 		FileType string `json:"file_type"`
@@ -91,9 +94,6 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 	// =============================
 	switch payload.Event {
 
-	// =============================
-	// Digitando ON
-	// =============================
 	case "conversation_typing_on":
 		_ = c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
 			InstanceID: instanceID,
@@ -101,9 +101,6 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 			Presence:   types.ChatPresenceComposing,
 		})
 
-	// =============================
-	// Digitando OFF
-	// =============================
 	case "conversation_typing_off":
 		_ = c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
 			InstanceID: instanceID,
@@ -111,9 +108,6 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 			Presence:   types.ChatPresencePaused,
 		})
 
-	// =============================
-	// Nova mensagem
-	// =============================
 	case "message_created":
 
 		// Só envia se for mensagem do agente
@@ -121,6 +115,25 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 			return ctx.JSON(http.StatusOK, map[string]string{
 				"status": "ignored",
 			})
+		}
+
+		// =============================
+		// REACTION
+		// =============================
+		if payload.ContentAttributes.InReplyTo > 0 && payload.Content != "" {
+			_, err := c.whatsmiau.SendReaction(ctx.Request().Context(), &whatsmiau.SendReactionRequest{
+				InstanceID: instanceID,
+				RemoteJID:  &jid,
+				MessageID:  fmt.Sprintf("%d", payload.ContentAttributes.InReplyTo),
+				Reaction:   payload.Content,
+				FromMe:     true,
+			})
+			if err != nil {
+				return ctx.JSON(http.StatusInternalServerError, map[string]string{
+					"error": "failed to send reaction",
+				})
+			}
+			return ctx.JSON(http.StatusOK, map[string]string{"status": "reaction_sent"})
 		}
 
 		// =============================
