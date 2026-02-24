@@ -6,7 +6,6 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/verbeux-ai/whatsmiau/interfaces"
 	"github.com/verbeux-ai/whatsmiau/lib/whatsmiau"
-	"github.com/verbeux-ai/whatsmiau/utils"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -22,6 +21,9 @@ func NewChatwoot(repository interfaces.InstanceRepository, whatsmiau *whatsmiau.
 	}
 }
 
+// =============================
+// Estrutura do webhook Chatwoot
+// =============================
 type ChatwootWebhook struct {
 	Event       string `json:"event"`
 	MessageType string `json:"message_type"`
@@ -36,7 +38,11 @@ type ChatwootWebhook struct {
 	} `json:"conversation"`
 }
 
+// =============================
+// ReceiveWebhook
+// =============================
 func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
+
 	instanceName := ctx.Param("instance")
 	if instanceName == "" {
 		return ctx.JSON(http.StatusBadRequest, map[string]string{
@@ -51,7 +57,7 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 		})
 	}
 
-	// Buscar instância
+	// Buscar instância no Redis
 	instances, err := c.repo.List(ctx.Request().Context(), instanceName)
 	if err != nil || len(instances) == 0 {
 		return ctx.JSON(http.StatusNotFound, map[string]string{
@@ -60,8 +66,8 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 	}
 
 	instanceID := instances[0].ID
-	jidString := payload.Conversation.Meta.Sender.Identifier
 
+	jidString := payload.Conversation.Meta.Sender.Identifier
 	if jidString == "" {
 		return ctx.JSON(http.StatusBadRequest, map[string]string{
 			"error": "identifier not found",
@@ -76,25 +82,36 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 	}
 
 	// =============================
-	// EVENTOS
+	// EVENTOS DO CHATWOOT
 	// =============================
 
 	switch payload.Event {
 
+	// =============================
+	// Digitando ON
+	// =============================
 	case "conversation_typing_on":
+
 		_ = c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
 			InstanceID: instanceID,
-			RemoteJID:  jid,
+			RemoteJID:  &jid,
 			Presence:   types.ChatPresenceComposing,
 		})
 
+	// =============================
+	// Digitando OFF
+	// =============================
 	case "conversation_typing_off":
+
 		_ = c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
 			InstanceID: instanceID,
-			RemoteJID:  jid,
+			RemoteJID:  &jid,
 			Presence:   types.ChatPresencePaused,
 		})
 
+	// =============================
+	// Nova mensagem
+	// =============================
 	case "message_created":
 
 		// Só enviar se for mensagem enviada pelo agente
@@ -110,9 +127,9 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 			})
 		}
 
-		_, err = c.whatsmiau.SendText(ctx.Request().Context(), &whatsmiau.SendText{
+		_, err := c.whatsmiau.SendText(ctx.Request().Context(), &whatsmiau.SendText{
 			InstanceID: instanceID,
-			RemoteJID:  jid,
+			RemoteJID:  &jid,
 			Text:       payload.Content,
 		})
 
