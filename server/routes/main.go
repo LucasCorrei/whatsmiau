@@ -6,9 +6,15 @@ import (
 )
 
 func Load(app *echo.Echo) {
-	app.Pre(middleware.Simplify(middleware.Auth))
 
-	V1(app.Group("/v1"))
+	// 🔵 Webhook SEM Auth
+	Chatwoot(app)
+
+	// 🔐 API protegida
+	protected := app.Group("")
+	protected.Pre(middleware.Simplify(middleware.Auth))
+
+	V1(protected.Group("/v1"))
 }
 
 func V1(group *echo.Group) {
