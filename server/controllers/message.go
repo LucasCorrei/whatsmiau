@@ -15,302 +15,186 @@ import (
 	"go.uber.org/zap"
 )
 
-type Message struct {
+type Chatwoot struct {
 	repo      interfaces.InstanceRepository
 	whatsmiau *whatsmiau.Whatsmiau
 }
 
-func NewMessages(repository interfaces.InstanceRepository, whatsmiau *whatsmiau.Whatsmiau) *Message {
-	return &Message{
+func NewChatwoot(repository interfaces.InstanceRepository, whatsmiau *whatsmiau.Whatsmiau) *Chatwoot {
+	return &Chatwoot{
 		repo:      repository,
 		whatsmiau: whatsmiau,
 	}
 }
 
-func (s *Message) SendText(ctx echo.Context) error {
-	var request dto.SendTextRequest
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
-	}
+// =============================
+// Estrutura do webhook Chatwoot
+// =============================
+type ChatwootWebhook struct {
+	Event       string `json:"event"`
+	MessageType string `json:"message_type"`
+	Content     string `json:"content"`
 
-	if err := validator.New().Struct(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
-	}
+	Attachments []struct {
+		FileType string `json:"file_type"`
+		DataURL  string `json:"data_url"`
+	} `json:"attachments"`
 
-	jid, err := numberToJid(request.Number)
-	if err != nil {
-		zap.L().Error("error converting number to jid", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid number format")
-	}
-
-	sendText := &whatsmiau.SendText{
-		Text:       request.Text,
-		InstanceID: request.InstanceID,
-		RemoteJID:  jid,
-	}
-
-	if request.Quoted != nil && len(request.Quoted.Key.Id) > 0 && len(request.Quoted.Message.Conversation) > 0 {
-		sendText.QuoteMessage = request.Quoted.Message.Conversation
-		sendText.QuoteMessageID = request.Quoted.Key.Id
-	}
-
-	c := ctx.Request().Context()
-	if err := s.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
-		InstanceID: request.InstanceID,
-		RemoteJID:  jid,
-		Presence:   types.ChatPresenceComposing,
-	}); err != nil {
-		zap.L().Error("Whatsmiau.ChatPresence", zap.Error(err))
-	} else {
-		time.Sleep(time.Millisecond * time.Duration(request.Delay)) // TODO: create a more robust solution
-	}
-
-	res, err := s.whatsmiau.SendText(c, sendText)
-	if err != nil {
-		zap.L().Error("Whatsmiau.SendText failed", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to send text")
-	}
-
-	return ctx.JSON(http.StatusOK, dto.SendTextResponse{
-		Key: dto.MessageResponseKey{
-			RemoteJid: request.Number,
-			FromMe:    true,
-			Id:        res.ID,
-		},
-		Status: "sent",
-		Message: dto.SendTextResponseMessage{
-			Conversation: request.Text,
-		},
-		MessageType:      "conversation",
-		MessageTimestamp: int(res.CreatedAt.Unix() / 1000),
-		InstanceId:       request.InstanceID,
-	})
+	Conversation struct {
+		Meta struct {
+			Sender struct {
+				Identifier string `json:"identifier"`
+			} `json:"sender"`
+		} `json:"meta"`
+	} `json:"conversation"`
 }
 
-func (s *Message) SendAudio(ctx echo.Context) error {
-	var request dto.SendAudioRequest
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
+// =============================
+// ReceiveWebhook
+// =============================
+func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
+
+	instanceName := ctx.Param("instance")
+	if instanceName == "" {
+		return ctx.JSON(http.StatusBadRequest, map[string]string{
+			"error": "instance required",
+		})
 	}
 
-	if err := validator.New().Struct(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
+	var payload ChatwootWebhook
+	if err := ctx.Bind(&payload); err != nil {
+		return ctx.JSON(http.StatusBadRequest, map[string]string{
+			"error": "invalid payload",
+		})
 	}
 
-	jid, err := numberToJid(request.Number)
+	// Buscar instância
+	instances, err := c.repo.List(ctx.Request().Context(), instanceName)
+	if err != nil || len(instances) == 0 {
+		return ctx.JSON(http.StatusNotFound, map[string]string{
+			"error": "instance not found",
+		})
+	}
+
+	instanceID := instances[0].ID
+
+	jidString := payload.Conversation.Meta.Sender.Identifier
+	if jidString == "" {
+		return ctx.JSON(http.StatusBadRequest, map[string]string{
+			"error": "identifier not found",
+		})
+	}
+
+	jid, err := types.ParseJID(jidString)
 	if err != nil {
-		zap.L().Error("error converting number to jid", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid number format")
+		return ctx.JSON(http.StatusBadRequest, map[string]string{
+			"error": "invalid jid",
+		})
 	}
 
-	sendText := &whatsmiau.SendAudioRequest{
-		AudioURL:   request.Audio,
-		InstanceID: request.InstanceID,
-		RemoteJID:  jid,
+	// =============================
+	// EVENTOS DO CHATWOOT
+	// =============================
+	switch payload.Event {
+
+	// Digitando ON
+	case "conversation_typing_on":
+		_ = c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
+			InstanceID: instanceID,
+			RemoteJID:  &jid,
+			Presence:   types.ChatPresenceComposing,
+		})
+
+	// Digitando OFF
+	case "conversation_typing_off":
+		_ = c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
+			InstanceID: instanceID,
+			RemoteJID:  &jid,
+			Presence:   types.ChatPresencePaused,
+		})
+
+	// Nova mensagem
+	case "message_created":
+
+		// Só envia se for mensagem do agente
+		if payload.MessageType != "outgoing" {
+			return ctx.JSON(http.StatusOK, map[string]string{
+				"status": "ignored",
+			})
+		}
+
+		cCtx := ctx.Request().Context()
+
+		// Enviar texto
+		if payload.Content != "" {
+			_, err := c.whatsmiau.SendText(cCtx, &whatsmiau.SendText{
+				InstanceID: instanceID,
+				RemoteJID:  &jid,
+				Text:       payload.Content,
+			})
+			if err != nil {
+				return ctx.JSON(http.StatusInternalServerError, map[string]string{
+					"error": "failed to send text",
+				})
+			}
+		}
+
+		// Enviar attachments
+		for _, att := range payload.Attachments {
+			switch att.FileType {
+			case "audio":
+				_, err := c.whatsmiau.SendAudio(cCtx, &whatsmiau.SendAudioRequest{
+					InstanceID: instanceID,
+					RemoteJID:  &jid,
+					AudioURL:   att.DataURL,
+				})
+				if err != nil {
+					return ctx.JSON(http.StatusInternalServerError, map[string]string{
+						"error": "failed to send audio",
+					})
+				}
+			case "image":
+				_, err := c.whatsmiau.SendImage(cCtx, &whatsmiau.SendImageRequest{
+					InstanceID: instanceID,
+					RemoteJID:  &jid,
+					MediaURL:   att.DataURL,
+					Mimetype:   "image/jpeg",
+				})
+				if err != nil {
+					return ctx.JSON(http.StatusInternalServerError, map[string]string{
+						"error": "failed to send image",
+					})
+				}
+			case "file":
+				_, err := c.whatsmiau.SendDocument(cCtx, &whatsmiau.SendDocumentRequest{
+					InstanceID: instanceID,
+					RemoteJID:  &jid,
+					MediaURL:   att.DataURL,
+					FileName:   "document.pdf",
+					Mimetype:   "application/pdf",
+				})
+				if err != nil {
+					return ctx.JSON(http.StatusInternalServerError, map[string]string{
+						"error": "failed to send document",
+					})
+				}
+			}
+		}
+
+		// Enviar reaction (se houver)
+		emojiRegex := regexp.MustCompile(`[\x{1F600}-\x{1F64F}]|[\x{1F300}-\x{1F5FF}]|[\x{1F680}-\x{1F6FF}]|[\x{2600}-\x{26FF}]|[\x{2700}-\x{27BF}]`)
+		if emojiRegex.MatchString(payload.Content) {
+			_, _ = c.whatsmiau.SendReaction(cCtx, &whatsmiau.SendReactionRequest{
+				InstanceID: instanceID,
+				RemoteJID:  &jid,
+				Reaction:   payload.Content,
+				MessageID:  "", // aqui você pode preencher se tiver in_reply_to_external_id
+				FromMe:     true,
+			})
+		}
 	}
 
-	if request.Quoted != nil && len(request.Quoted.Key.Id) > 0 && len(request.Quoted.Message.Conversation) > 0 {
-		sendText.QuoteMessage = request.Quoted.Message.Conversation
-		sendText.QuoteMessageID = request.Quoted.Key.Id
-	}
-
-	c := ctx.Request().Context()
-	if err := s.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
-		InstanceID: request.InstanceID,
-		RemoteJID:  jid,
-		Presence:   types.ChatPresenceComposing,
-		Media:      types.ChatPresenceMediaAudio,
-	}); err != nil {
-		zap.L().Error("Whatsmiau.ChatPresence", zap.Error(err))
-	} else {
-		time.Sleep(time.Millisecond * time.Duration(request.Delay)) // TODO: create a more robust solution
-	}
-
-	res, err := s.whatsmiau.SendAudio(c, sendText)
-	if err != nil {
-		zap.L().Error("Whatsmiau.SendAudioRequest failed", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to send audio")
-	}
-
-	return ctx.JSON(http.StatusOK, dto.SendAudioResponse{
-		Key: dto.MessageResponseKey{
-			RemoteJid: request.Number,
-			FromMe:    true,
-			Id:        res.ID,
-		},
-
-		Status:           "sent",
-		MessageType:      "audioMessage",
-		MessageTimestamp: int(res.CreatedAt.Unix() / 1000),
-		InstanceId:       request.InstanceID,
-	})
-}
-
-// For evolution compatibility
-func (s *Message) SendMedia(ctx echo.Context) error {
-	var request dto.SendMediaRequest
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
-	}
-
-	if err := validator.New().Struct(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
-	}
-	switch request.Mediatype {
-	case "image":
-		request.SendDocumentRequest.Mimetype = "image/png"
-		return s.sendImage(ctx, request.SendDocumentRequest)
-	}
-
-	return s.sendDocument(ctx, request.SendDocumentRequest)
-}
-
-func (s *Message) SendDocument(ctx echo.Context) error {
-	var request dto.SendDocumentRequest
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
-	}
-
-	if err := validator.New().Struct(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
-	}
-
-	return s.sendDocument(ctx, request)
-}
-
-func (s *Message) sendDocument(ctx echo.Context, request dto.SendDocumentRequest) error {
-	jid, err := numberToJid(request.Number)
-	if err != nil {
-		zap.L().Error("error converting number to jid", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid number format")
-	}
-
-	sendData := &whatsmiau.SendDocumentRequest{
-		InstanceID: request.InstanceID,
-		MediaURL:   request.Media,
-		Caption:    request.Caption,
-		FileName:   request.FileName,
-		RemoteJID:  jid,
-		Mimetype:   request.Mimetype,
-	}
-
-	c := ctx.Request().Context()
-	time.Sleep(time.Millisecond * time.Duration(request.Delay)) // TODO: create a more robust solution
-
-	res, err := s.whatsmiau.SendDocument(c, sendData)
-	if err != nil {
-		zap.L().Error("Whatsmiau.SendDocument failed", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to send document")
-	}
-
-	return ctx.JSON(http.StatusOK, dto.SendDocumentResponse{
-		Key: dto.MessageResponseKey{
-			RemoteJid: request.Number,
-			FromMe:    true,
-			Id:        res.ID,
-		},
-		Status:           "sent",
-		MessageType:      "documentMessage",
-		MessageTimestamp: int(res.CreatedAt.Unix() / 1000),
-		InstanceId:       request.InstanceID,
-	})
-}
-
-func (s *Message) SendImage(ctx echo.Context) error {
-	var request dto.SendDocumentRequest
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
-	}
-
-	if err := validator.New().Struct(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
-	}
-
-	return s.sendImage(ctx, request)
-}
-
-func (s *Message) sendImage(ctx echo.Context, request dto.SendDocumentRequest) error {
-	jid, err := numberToJid(request.Number)
-	if err != nil {
-		zap.L().Error("error converting number to jid", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid number format")
-	}
-
-	sendData := &whatsmiau.SendImageRequest{
-		InstanceID: request.InstanceID,
-		MediaURL:   request.Media,
-		Caption:    request.Caption,
-		RemoteJID:  jid,
-		Mimetype:   request.Mimetype,
-	}
-
-	c := ctx.Request().Context()
-	time.Sleep(time.Millisecond * time.Duration(request.Delay)) // TODO: create a more robust solution
-
-	res, err := s.whatsmiau.SendImage(c, sendData)
-	if err != nil {
-		zap.L().Error("Whatsmiau.SendDocument failed", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to send document")
-	}
-
-	return ctx.JSON(http.StatusOK, dto.SendDocumentResponse{
-		Key: dto.MessageResponseKey{
-			RemoteJid: request.Number,
-			FromMe:    true,
-			Id:        res.ID,
-		},
-		Status:           "sent",
-		MessageType:      "imageMessage",
-		MessageTimestamp: int(res.CreatedAt.Unix() / 1000),
-		InstanceId:       request.InstanceID,
-	})
-}
-
-func (s *Message) SendReaction(ctx echo.Context) error {
-	var request dto.SendReactionRequest
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
-	}
-
-	if err := validator.New().Struct(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
-	}
-
-	jid, err := numberToJid(request.Key.RemoteJid)
-	if err != nil {
-		zap.L().Error("error converting number to jid", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid number format")
-	}
-
-	var emojiRegex = regexp.MustCompile(`[\x{1F600}-\x{1F64F}]|[\x{1F300}-\x{1F5FF}]|[\x{1F680}-\x{1F6FF}]|[\x{2600}-\x{26FF}]|[\x{2700}-\x{27BF}]`)
-	if !emojiRegex.MatchString(request.Reaction) {
-		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid reaction, must be a emoji")
-	}
-
-	sendReaction := &whatsmiau.SendReactionRequest{
-		InstanceID: request.InstanceID,
-		Reaction:   request.Reaction,
-		RemoteJID:  jid,
-		MessageID:  request.Key.Id,
-		FromMe:     request.Key.FromMe,
-	}
-
-	c := ctx.Request().Context()
-	res, err := s.whatsmiau.SendReaction(c, sendReaction)
-	if err != nil {
-		zap.L().Error("Whatsmiau.SendReaction failed", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to send reaction")
-	}
-
-	return ctx.JSON(http.StatusOK, dto.SendReactionResponse{
-		Key: dto.MessageResponseKey{
-			RemoteJid: request.Key.RemoteJid,
-			FromMe:    true,
-			Id:        res.ID,
-		},
-		Status:           "sent",
-		MessageType:      "reactionMessage",
-		MessageTimestamp: int(res.CreatedAt.UnixMicro() / 1000),
-		InstanceId:       request.InstanceID,
+	return ctx.JSON(http.StatusOK, map[string]string{
+		"status": "ok",
 	})
 }
