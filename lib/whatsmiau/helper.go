@@ -25,6 +25,14 @@ import (
 	"golang.org/x/net/context"
 )
 
+type ProxyInfo struct {
+	Host     string
+	Port     int
+	Protocol string
+	Username string
+	Password string
+}
+
 func b64(b []byte) string {
 	if len(b) == 0 {
 		return ""
@@ -310,8 +318,9 @@ func canIgnoreGroup(evt interface{}, instance *models.Instance) bool {
 	return strings.HasSuffix(jid, "@g.us")
 }
 
-func configProxy(client *whatsmeow.Client, instanceProxy models.InstanceProxy) {
-	if len(instanceProxy.ProxyHost) <= 0 {
+// Configura o proxy no client do WhatsMeow
+func configProxy(client *whatsmeow.Client, proxy *ProxyInfo) {
+	if proxy == nil || len(proxy.Host) <= 0 {
 		return
 	}
 
@@ -324,12 +333,12 @@ func configProxy(client *whatsmeow.Client, instanceProxy models.InstanceProxy) {
 		NoMedia: env.Env.ProxyNoMedia,
 	}
 
-	proxyUrl := mountProxyUrl(instanceProxy)
+	proxyUrl := mountProxyUrl(proxy)
 	if err := client.SetProxyAddress(proxyUrl, opts); err != nil {
-		zap.L().Error("failed to set proxy address", zap.Error(err), zap.Any("instanceProxy", instanceProxy), zap.Any("jid", jid))
+		zap.L().Error("failed to set proxy address", zap.Error(err), zap.Any("proxy", proxy), zap.Any("jid", jid))
 	}
 }
 
-func mountProxyUrl(proxy models.InstanceProxy) string {
-	return fmt.Sprintf("%s://%s:%s@%s:%s", proxy.ProxyProtocol, proxy.ProxyUsername, proxy.ProxyPassword, proxy.ProxyHost, proxy.ProxyPort)
+func mountProxyUrl(proxy *ProxyInfo) string {
+	return fmt.Sprintf("%s://%s:%s@%s:%d", proxy.Protocol, proxy.Username, proxy.Password, proxy.Host, proxy.Port)
 }
