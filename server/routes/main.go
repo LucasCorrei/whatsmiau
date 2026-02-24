@@ -6,12 +6,14 @@ import (
 )
 
 func Load(app *echo.Echo) {
-	// 1. Webhook SEM autenticação (PRIMEIRO)
-	Webhook(app.Group("/webhook"))
+	// Webhook SEM autenticação - registrado ANTES do middleware
+	webhookGroup := app.Group("/webhook")
+	Webhook(webhookGroup)
 	
-	// 2. Depois aplica autenticação para o resto
-	app.Pre(middleware.Simplify(middleware.Auth))
-	V1(app.Group("/v1"))
+	// Middleware de autenticação só para rotas V1
+	v1Group := app.Group("/v1")
+	v1Group.Use(middleware.Simplify(middleware.Auth))
+	V1(v1Group)
 }
 
 func V1(group *echo.Group) {
