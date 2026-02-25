@@ -21,6 +21,9 @@ func NewChatwoot(repository interfaces.InstanceRepository, whatsmiau *whatsmiau.
 	}
 }
 
+// =============================
+// Estrutura do webhook Chatwoot
+// =============================
 type ChatwootWebhook struct {
 	Event       string `json:"event"`
 	MessageType string `json:"message_type"`
@@ -48,6 +51,9 @@ type ChatwootWebhook struct {
 	} `json:"conversation"`
 }
 
+// =============================
+// ReceiveWebhook
+// =============================
 func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 	instanceName := ctx.Param("instance")
 	if instanceName == "" {
@@ -121,45 +127,42 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 				"status": "ignored",
 			})
 		}
-		// ======================================
-// REACTION (se estiver respondendo msg)
-// ======================================
-if payload.ContentAttributes.InReplyToExternalID != "" {
+	// ======================================
+	// REACTION (se estiver respondendo msg)
+	// ======================================
+	if payload.ContentAttributes.InReplyToExternalID != "" {
 
-	externalID := payload.ContentAttributes.InReplyToExternalID
+		externalID := payload.ContentAttributes.InReplyToExternalID
 
-	// Remove prefixo WAID:
-	messageID := strings.TrimPrefix(externalID, "WAID:")
+		// Remove prefixo WAID:
+		messageID := strings.TrimPrefix(externalID, "WAID:")
 
-	// Se o conteúdo tiver algo, usa como emoji
-	reaction := payload.Content
+		// Usa o conteúdo como reação
+		reaction := payload.Content
+		if reaction == "" {
+			reaction = "👍"
+		}
 
-	if reaction == "" {
-		reaction = "👍" // fallback opcional
-	}
+		_, err := c.whatsmiau.SendReaction(
+			ctx.Request().Context(),
+			&whatsmiau.SendReactionRequest{
+				InstanceID: instanceID,
+				Reaction:   reaction,
+				RemoteJID:  &jid,
+				MessageID:  messageID,
+				FromMe:     false,
+			},
+		)
+		if err != nil {
+			return ctx.JSON(http.StatusInternalServerError, map[string]string{
+				"error": "failed to send reaction",
+			})
+		}
 
-	_, err := c.whatsmiau.SendReaction(
-		ctx.Request().Context(),
-		&whatsmiau.SendReactionRequest{
-			InstanceID: instanceID,
-			Reaction:   reaction,
-			RemoteJID:  &jid,
-			MessageID:  messageID,
-			FromMe:     false,
-		},
-	)
-}
-	if err != nil {
-		return ctx.JSON(http.StatusInternalServerError, map[string]string{
-			"error": "failed to send reaction",
+		return ctx.JSON(http.StatusOK, map[string]string{
+			"status": "reaction_sent",
 		})
 	}
-
-	return ctx.JSON(http.StatusOK, map[string]string{
-		"status": "reaction_sent",
-	})
-}
-
 		// =============================
 		// TEXTO
 		// =============================
@@ -227,4 +230,3 @@ if payload.ContentAttributes.InReplyToExternalID != "" {
 		"status": "ok",
 	})
 }
-
