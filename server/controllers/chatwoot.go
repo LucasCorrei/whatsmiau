@@ -2,7 +2,9 @@ package controllers
 
 import (
 	"net/http"
+	"regexp"
 	"strings"
+
 	"github.com/labstack/echo/v4"
 	"github.com/verbeux-ai/whatsmiau/interfaces"
 	"github.com/verbeux-ai/whatsmiau/lib/whatsmiau"
@@ -21,9 +23,6 @@ func NewChatwoot(repository interfaces.InstanceRepository, whatsmiau *whatsmiau.
 	}
 }
 
-// =============================
-// Estrutura do webhook Chatwoot
-// =============================
 type ChatwootWebhook struct {
 	Event       string `json:"event"`
 	MessageType string `json:"message_type"`
@@ -51,10 +50,22 @@ type ChatwootWebhook struct {
 	} `json:"conversation"`
 }
 
-// =============================
-// ReceiveWebhook
-// =============================
+// =======================================================
+// UTIL: verifica se o texto é somente emoji
+// =======================================================
+func isOnlyEmoji(text string) bool {
+	if text == "" {
+		return false
+	}
+	emojiRegex := regexp.MustCompile(`^([\p{So}\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}\x{FE0F}\x{200D}]+)$`)
+	return emojiRegex.MatchString(strings.TrimSpace(text))
+}
+
+// =======================================================
+// WEBHOOK
+// =======================================================
 func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
+
 	instanceName := ctx.Param("instance")
 	if instanceName == "" {
 		return ctx.JSON(http.StatusBadRequest, map[string]string{
@@ -69,7 +80,6 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 		})
 	}
 
-	// Buscar instância
 	instances, err := c.repo.List(ctx.Request().Context(), instanceName)
 	if err != nil || len(instances) == 0 {
 		return ctx.JSON(http.StatusNotFound, map[string]string{
@@ -93,14 +103,14 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 		})
 	}
 
-	// =============================
-	// EVENTOS DO CHATWOOT
-	// =============================
+	// =======================================================
+	// EVENT SWITCH
+	// =======================================================
 	switch payload.Event {
 
-	// =============================
-	// Digitando ON
-	// =============================
+	// -------------------------------
+	// TYPING ON
+	// -------------------------------
 	case "conversation_typing_on":
 		_ = c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
 			InstanceID: instanceID,
@@ -109,9 +119,9 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 		})
 		return ctx.JSON(http.StatusOK, map[string]string{"status": "typing_on"})
 
-	// =============================
-	// Digitando OFF
-	// =============================
+	// -------------------------------
+	// TYPING OFF
+	// -------------------------------
 	case "conversation_typing_off":
 		_ = c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
 			InstanceID: instanceID,
@@ -120,78 +130,72 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 		})
 		return ctx.JSON(http.StatusOK, map[string]string{"status": "typing_off"})
 
-	// =============================
-	// Nova mensagem
-	// =============================
+	// -------------------------------
+	// MESSAGE CREATED
+	// -------------------------------
 	case "message_created":
 
-		// 🔴 Ignora se não for mensagem do agente
 		if payload.MessageType != "outgoing" {
-			return ctx.JSON(http.StatusOK, map[string]string{
-				"status": "ignored_not_outgoing",
-			})
+			return ctx.JSON(http.StatusOK, map[string]string{"status": "ignored_not_outgoing"})
 		}
 
-		// 🔴 Ignora mensagem privada
 		if payload.Private {
-			return ctx.JSON(http.StatusOK, map[string]string{
-				"status": "ignored_private",
-			})
+			return ctx.JSON(http.StatusOK, map[string]string{"status": "ignored_private"})
 		}
 
-		// 🔴 Ignora se já tiver source_id (já foi enviada ao canal)
 		if payload.SourceID != "" {
-			return ctx.JSON(http.StatusOK, map[string]string{
-				"status": "ignored_already_has_source_id",
-			})
+			return ctx.JSON(http.StatusOK, map[string]string{"status": "ignored_already_has_source_id"})
 		}
-		// ======================================
-// REACTION (se estiver respondendo msg)
-// ======================================
-if payload.ContentAttributes.InReplyToExternalID != "" {
 
-	externalID := payload.ContentAttributes.InReplyToExternalID
+		// -----------------------------------------
+		// Verifica se é reply
+		// -----------------------------------------
+		var quotedMessageID string
+		if payload.ContentAttributes.InReplyToExternalID != "" {
+			quotedMessageID = strings.TrimPrefix(
+				payload.ContentAttributes.InReplyToExternalID,
+				"WAID:",
+			)
+		}
 
-	// Remove prefixo WAID:
-	messageID := strings.TrimPrefix(externalID, "WAID:")
-
-	// Se o conteúdo tiver algo, usa como emoji
-	reaction := payload.Content
-
-	if reaction == "" {
-		reaction = "👍" // fallback opcional
-	}
-
-	_, err := c.whatsmiau.SendReaction(
-		ctx.Request().Context(),
-		&whatsmiau.SendReactionRequest{
-			InstanceID: instanceID,
-			Reaction:   reaction,
-			RemoteJID:  &jid,
-			MessageID:  messageID,
-			FromMe:     false,
-		},
-	)
-
-	if err != nil {
-		return ctx.JSON(http.StatusInternalServerError, map[string]string{
-			"error": "failed to send reaction",
-		})
-	}
-
-	return ctx.JSON(http.StatusOK, map[string]string{
-		"status": "reaction_sent",
-	})
-}
-		// =============================
+		// -----------------------------------------
 		// TEXTO
-		// =============================
+		// -----------------------------------------
 		if payload.Content != "" {
+
+			// Se for reply + emoji → reaction
+			if quotedMessageID != "" && isOnlyEmoji(payload.Content) {
+
+				_, err := c.whatsmiau.SendReaction(
+					ctx.Request().Context(),
+					&whatsmiau.SendReactionRequest{
+						InstanceID: instanceID,
+						Reaction:   payload.Content,
+						RemoteJID:  &jid,
+						MessageID:  quotedMessageID,
+						FromMe:     false,
+					},
+				)
+
+				if err != nil {
+					return ctx.JSON(http.StatusInternalServerError, map[string]string{
+						"error": "failed to send reaction",
+					})
+				}
+
+				return ctx.JSON(http.StatusOK, map[string]string{
+					"status": "reaction_sent",
+				})
+			}
+
+			// Texto normal (com ou sem quoted)
 			_, err := c.whatsmiau.SendText(ctx.Request().Context(), &whatsmiau.SendText{
-				InstanceID: instanceID,
-				RemoteJID:  &jid,
-				Text:       payload.Content,
+				InstanceID:     instanceID,
+				RemoteJID:      &jid,
+				Text:           payload.Content,
+				QuoteMessageID: quotedMessageID,
 			})
+
 			if err != nil {
 				return ctx.JSON(http.StatusInternalServerError, map[string]string{
 					"error": "failed to send text",
@@ -199,17 +203,19 @@ if payload.ContentAttributes.InReplyToExternalID != "" {
 			}
 		}
 
-		// =============================
+		// -----------------------------------------
 		// ATTACHMENTS
-		// =============================
+		// -----------------------------------------
 		for _, att := range payload.Attachments {
+
 			switch att.FileType {
 
 			case "audio":
 				_, err := c.whatsmiau.SendAudio(ctx.Request().Context(), &whatsmiau.SendAudioRequest{
-					InstanceID: instanceID,
-					RemoteJID:  &jid,
-					AudioURL:   att.DataURL,
+					InstanceID:     instanceID,
+					RemoteJID:      &jid,
+					AudioURL:       att.DataURL,
+					QuoteMessageID: quotedMessageID,
 				})
 				if err != nil {
 					return ctx.JSON(http.StatusInternalServerError, map[string]string{
@@ -219,10 +225,11 @@ if payload.ContentAttributes.InReplyToExternalID != "" {
 
 			case "image":
 				_, err := c.whatsmiau.SendImage(ctx.Request().Context(), &whatsmiau.SendImageRequest{
-					InstanceID: instanceID,
-					RemoteJID:  &jid,
-					MediaURL:   att.DataURL,
-					Mimetype:   "image/jpeg",
+					InstanceID:     instanceID,
+					RemoteJID:      &jid,
+					MediaURL:       att.DataURL,
+					Mimetype:       "image/jpeg",
+					QuoteMessageID: quotedMessageID,
 				})
 				if err != nil {
 					return ctx.JSON(http.StatusInternalServerError, map[string]string{
@@ -232,11 +239,12 @@ if payload.ContentAttributes.InReplyToExternalID != "" {
 
 			case "file":
 				_, err := c.whatsmiau.SendDocument(ctx.Request().Context(), &whatsmiau.SendDocumentRequest{
-					InstanceID: instanceID,
-					RemoteJID:  &jid,
-					MediaURL:   att.DataURL,
-					FileName:   "document",
-					Mimetype:   "application/octet-stream",
+					InstanceID:     instanceID,
+					RemoteJID:      &jid,
+					MediaURL:       att.DataURL,
+					FileName:       "document",
+					Mimetype:       "application/octet-stream",
+					QuoteMessageID: quotedMessageID,
 				})
 				if err != nil {
 					return ctx.JSON(http.StatusInternalServerError, map[string]string{
