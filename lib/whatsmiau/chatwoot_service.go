@@ -15,7 +15,7 @@ import (
 	"time"
 	"go.uber.org/zap"
 	"github.com/verbeux-ai/whatsmiau/env"
-
+	_ "github.com/lib/pq"
 )
 
 type ChatwootConfig struct {
@@ -43,8 +43,13 @@ func NewChatwootService(config ChatwootConfig) *ChatwootService {
 		return service
 	}
 
+	zap.L().Info("chatwoot: serviço HABILITADO")
+
 	// Conecta ao PostgreSQL se a URI estiver configurada
 	if env.Env.ChatwootImportDatabaseConnectionURI != "" {
+		zap.L().Info("chatwoot: tentando conectar ao PostgreSQL",
+			zap.String("uri", maskPassword(env.Env.ChatwootImportDatabaseConnectionURI)))
+
 		db, err := sql.Open("postgres", env.Env.ChatwootImportDatabaseConnectionURI)
 		if err != nil {
 			zap.L().Error("chatwoot: erro ao conectar no PostgreSQL", zap.Error(err))
@@ -60,19 +65,39 @@ func NewChatwootService(config ChatwootConfig) *ChatwootService {
 				db.Close()
 			} else {
 				service.db = db
-				zap.L().Info("chatwoot: conectado ao PostgreSQL para verificação de duplicatas")
+				zap.L().Info("chatwoot: ✅ CONECTADO ao PostgreSQL para verificação de duplicatas")
 			}
 		}
 	} else {
-		zap.L().Warn("chatwoot: CHATWOOT_IMPORT_DATABASE_CONNECTION_URI não configurado, verificação de duplicatas desabilitada")
+		zap.L().Warn("chatwoot: ⚠️ CHATWOOT_IMPORT_DATABASE_CONNECTION_URI não configurado, verificação de duplicatas DESABILITADA")
 	}
 
 	return service
 }
 
+// maskPassword mascara a senha na URI do PostgreSQL para logs
+func maskPassword(uri string) string {
+	// postgres://user:password@host:port/db -> postgres://user:***@host:port/db
+	if strings.Contains(uri, "@") && strings.Contains(uri, "://") {
+		parts := strings.Split(uri, "://")
+		if len(parts) == 2 {
+			afterScheme := parts[1]
+			if strings.Contains(afterScheme, "@") {
+				userHostParts := strings.SplitN(afterScheme, "@", 2)
+				if strings.Contains(userHostParts[0], ":") {
+					userParts := strings.SplitN(userHostParts[0], ":", 2)
+					return parts[0] + "://" + userParts[0] + ":***@" + userHostParts[1]
+				}
+			}
+		}
+	}
+	return uri
+}
+
 // Close fecha a conexão com o banco de dados
 func (c *ChatwootService) Close() error {
 	if c.db != nil {
+		zap.L().Info("chatwoot: fechando conexão com PostgreSQL")
 		return c.db.Close()
 	}
 	return nil
@@ -215,8 +240,13 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 // checkMessageExists verifica se a mensagem já existe no Chatwoot
 // retorna true se a mensagem já foi salva
 func (c *ChatwootService) checkMessageExists(ctx context.Context, conversationID int, sourceID string) (bool, error) {
+	zap.L().Debug("chatwoot: verificando duplicata",
+		zap.Int("conversationId", conversationID),
+		zap.String("sourceId", sourceID),
+		zap.Bool("dbConnected", c.db != nil))
+
 	if c.db == nil {
-		// Se não tem conexão com o banco, não faz verificação
+		zap.L().Warn("chatwoot: ⚠️ verificação de duplicata PULADA - banco de dados NÃO CONECTADO")
 		return false, nil
 	}
 
@@ -228,13 +258,34 @@ func (c *ChatwootService) checkMessageExists(ctx context.Context, conversationID
 		LIMIT 1
 	`
 
+	zap.L().Debug("chatwoot: executando query de verificação",
+		zap.String("query", query),
+		zap.Int("conversationId", conversationID),
+		zap.String("sourceId", sourceID))
+
 	var count int
 	err := c.db.QueryRowContext(ctx, query, conversationID, sourceID).Scan(&count)
 	if err != nil {
+		zap.L().Error("chatwoot: ❌ erro ao verificar mensagem existente",
+			zap.Error(err),
+			zap.Int("conversationId", conversationID),
+			zap.String("sourceId", sourceID))
 		return false, fmt.Errorf("erro ao verificar mensagem existente: %w", err)
 	}
 
-	return count > 0, nil
+	exists := count > 0
+	if exists {
+		zap.L().Info("chatwoot: ✅ mensagem JÁ EXISTE no banco",
+			zap.Int("count", count),
+			zap.String("sourceId", sourceID),
+			zap.Int("conversationId", conversationID))
+	} else {
+		zap.L().Debug("chatwoot: ✅ mensagem NÃO EXISTE no banco, pode enviar",
+			zap.String("sourceId", sourceID),
+			zap.Int("conversationId", conversationID))
+	}
+
+	return exists, nil
 }
 
 // ── Contatos ──────────────────────────────────────────────────────────────────
@@ -360,16 +411,26 @@ func (c *ChatwootService) createConversation(ctx context.Context, contactID int)
 func (c *ChatwootService) sendMessage(ctx context.Context, conversationID int, content, messageID string) error {
 	sourceID := fmt.Sprintf("WAID:%s", messageID)
 
+	zap.L().Info("chatwoot: 📨 preparando para enviar mensagem de TEXTO",
+		zap.String("messageId", messageID),
+		zap.String("sourceId", sourceID),
+		zap.Int("conversationId", conversationID),
+		zap.Int("contentLength", len(content)))
+
 	// Verifica se a mensagem já existe
 	exists, err := c.checkMessageExists(ctx, conversationID, sourceID)
 	if err != nil {
 		zap.L().Warn("chatwoot: erro ao verificar duplicata, continuando envio", zap.Error(err))
 	} else if exists {
-		zap.L().Info("chatwoot: mensagem já existe, ignorando",
+		zap.L().Info("chatwoot: 🚫 mensagem já existe, IGNORANDO envio",
 			zap.String("sourceId", sourceID),
 			zap.Int("conversationId", conversationID))
 		return nil
 	}
+
+	zap.L().Info("chatwoot: ➡️ enviando mensagem de texto para API",
+		zap.String("sourceId", sourceID),
+		zap.Int("conversationId", conversationID))
 
 	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
 		c.config.URL, c.config.AccountID, conversationID)
@@ -382,14 +443,23 @@ func (c *ChatwootService) sendMessage(ctx context.Context, conversationID int, c
 
 	resp, err := c.doRequest(ctx, "POST", url, body)
 	if err != nil {
+		zap.L().Error("chatwoot: ❌ erro na requisição HTTP", zap.Error(err))
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
+		zap.L().Error("chatwoot: ❌ erro do servidor Chatwoot",
+			zap.Int("statusCode", resp.StatusCode),
+			zap.String("response", string(raw)))
 		return fmt.Errorf("chatwoot erro %d: %s", resp.StatusCode, string(raw))
 	}
+
+	zap.L().Info("chatwoot: ✅ mensagem de texto enviada com SUCESSO",
+		zap.String("sourceId", sourceID),
+		zap.Int("statusCode", resp.StatusCode))
+
 	return nil
 }
 
@@ -401,16 +471,28 @@ func (c *ChatwootService) sendMediaMessage(
 ) error {
 	sourceID := fmt.Sprintf("WAID:%s", messageID)
 
+	zap.L().Info("chatwoot: 📨 preparando para enviar MÍDIA",
+		zap.String("messageId", messageID),
+		zap.String("sourceId", sourceID),
+		zap.Int("conversationId", conversationID),
+		zap.String("filename", filename),
+		zap.String("mimetype", mimetype),
+		zap.Int("mediaSize", len(mediaBytes)))
+
 	// Verifica se a mensagem já existe
 	exists, err := c.checkMessageExists(ctx, conversationID, sourceID)
 	if err != nil {
 		zap.L().Warn("chatwoot: erro ao verificar duplicata, continuando envio", zap.Error(err))
 	} else if exists {
-		zap.L().Info("chatwoot: mídia já existe, ignorando",
+		zap.L().Info("chatwoot: 🚫 mídia já existe, IGNORANDO envio",
 			zap.String("sourceId", sourceID),
 			zap.Int("conversationId", conversationID))
 		return nil
 	}
+
+	zap.L().Info("chatwoot: ➡️ enviando mídia para API",
+		zap.String("sourceId", sourceID),
+		zap.Int("conversationId", conversationID))
 
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
@@ -449,14 +531,23 @@ func (c *ChatwootService) sendMediaMessage(
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		zap.L().Error("chatwoot: ❌ erro na requisição HTTP de mídia", zap.Error(err))
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
+		zap.L().Error("chatwoot: ❌ erro do servidor Chatwoot ao enviar mídia",
+			zap.Int("statusCode", resp.StatusCode),
+			zap.String("response", string(raw)))
 		return fmt.Errorf("chatwoot erro %d: %s", resp.StatusCode, string(raw))
 	}
+
+	zap.L().Info("chatwoot: ✅ mídia enviada com SUCESSO",
+		zap.String("sourceId", sourceID),
+		zap.Int("statusCode", resp.StatusCode))
+
 	return nil
 }
 
