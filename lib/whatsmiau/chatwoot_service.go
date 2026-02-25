@@ -13,9 +13,10 @@ import (
 	"net/textproto"
 	"strings"
 	"time"
-	"go.uber.org/zap"
-	"github.com/verbeux-ai/whatsmiau/env"
+
 	_ "github.com/lib/pq"
+	"github.com/verbeux-ai/whatsmiau/env"
+	"go.uber.org/zap"
 )
 
 type ChatwootConfig struct {
@@ -174,17 +175,26 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 		messageID = messageData.Key.Id
 	}
 
+	zap.L().Info("chatwoot: 📞 processando mensagem",
+		zap.String("phone", phone),
+		zap.String("messageId", messageID),
+		zap.String("pushName", pushName))
+
 	contactID, err := c.findOrCreateContact(ctx, phone, pushName, remoteJid)
 	if err != nil {
 		zap.L().Error("chatwoot: erro ao buscar/criar contato", zap.Error(err))
 		return
 	}
 
+	zap.L().Info("chatwoot: ✅ contato obtido", zap.Int("contactId", contactID))
+
 	conversationID, err := c.findOrCreateConversation(ctx, contactID)
 	if err != nil {
 		zap.L().Error("chatwoot: erro ao buscar/criar conversa", zap.Error(err))
 		return
 	}
+
+	zap.L().Info("chatwoot: ✅ conversa obtida", zap.Int("conversationId", conversationID))
 
 	msg := messageData.Message
 	if msg == nil {
@@ -237,16 +247,21 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 
 // ── Verificação de duplicatas ─────────────────────────────────────────────────
 
-// checkMessageExists verifica se a mensagem já existe no Chatwoot
-// retorna true se a mensagem já foi salva
 func (c *ChatwootService) checkMessageExists(ctx context.Context, conversationID int, sourceID string) (bool, error) {
-	zap.L().Debug("chatwoot: verificando duplicata",
+	zap.L().Info("chatwoot: 🔍 iniciando verificação de duplicata",
 		zap.Int("conversationId", conversationID),
 		zap.String("sourceId", sourceID),
 		zap.Bool("dbConnected", c.db != nil))
 
 	if c.db == nil {
 		zap.L().Warn("chatwoot: ⚠️ verificação de duplicata PULADA - banco de dados NÃO CONECTADO")
+		return false, nil
+	}
+
+	// Proteção adicional: se conversationID for 0 ou inválido, não verifica
+	if conversationID <= 0 {
+		zap.L().Warn("chatwoot: ⚠️ conversationID inválido, pulando verificação",
+			zap.Int("conversationId", conversationID))
 		return false, nil
 	}
 
@@ -258,15 +273,14 @@ func (c *ChatwootService) checkMessageExists(ctx context.Context, conversationID
 		LIMIT 1
 	`
 
-	zap.L().Debug("chatwoot: executando query de verificação",
-		zap.String("query", query),
+	zap.L().Info("chatwoot: 📊 executando query de verificação",
 		zap.Int("conversationId", conversationID),
 		zap.String("sourceId", sourceID))
 
 	var count int
 	err := c.db.QueryRowContext(ctx, query, conversationID, sourceID).Scan(&count)
 	if err != nil {
-		zap.L().Error("chatwoot: ❌ erro ao verificar mensagem existente",
+		zap.L().Error("chatwoot: ❌ erro ao executar query de verificação",
 			zap.Error(err),
 			zap.Int("conversationId", conversationID),
 			zap.String("sourceId", sourceID))
@@ -275,12 +289,12 @@ func (c *ChatwootService) checkMessageExists(ctx context.Context, conversationID
 
 	exists := count > 0
 	if exists {
-		zap.L().Info("chatwoot: ✅ mensagem JÁ EXISTE no banco",
+		zap.L().Info("chatwoot: ✅ DUPLICATA DETECTADA - mensagem JÁ EXISTE",
 			zap.Int("count", count),
 			zap.String("sourceId", sourceID),
 			zap.Int("conversationId", conversationID))
 	} else {
-		zap.L().Debug("chatwoot: ✅ mensagem NÃO EXISTE no banco, pode enviar",
+		zap.L().Info("chatwoot: ✅ mensagem NÃO EXISTE no banco, pode enviar",
 			zap.String("sourceId", sourceID),
 			zap.Int("conversationId", conversationID))
 	}
@@ -291,13 +305,20 @@ func (c *ChatwootService) checkMessageExists(ctx context.Context, conversationID
 // ── Contatos ──────────────────────────────────────────────────────────────────
 
 func (c *ChatwootService) findOrCreateContact(ctx context.Context, phone, name, identifier string) (int, error) {
+	zap.L().Info("chatwoot: 🔍 buscando contato",
+		zap.String("phone", phone),
+		zap.String("name", name))
+
 	id, err := c.searchContact(ctx, phone)
 	if err != nil {
 		return 0, err
 	}
 	if id > 0 {
+		zap.L().Info("chatwoot: ✅ contato ENCONTRADO", zap.Int("contactId", id))
 		return id, nil
 	}
+
+	zap.L().Info("chatwoot: 📝 criando novo contato", zap.String("phone", phone))
 	return c.createContact(ctx, phone, name, identifier)
 }
 
@@ -348,41 +369,96 @@ func (c *ChatwootService) createContact(ctx context.Context, phone, name, identi
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return 0, err
 	}
-	return result.Payload.Contact.ID, nil
+
+	contactID := result.Payload.Contact.ID
+	zap.L().Info("chatwoot: ✅ contato CRIADO", zap.Int("contactId", contactID))
+
+	return contactID, nil
 }
 
 // ── Conversas ─────────────────────────────────────────────────────────────────
 
 func (c *ChatwootService) findOrCreateConversation(ctx context.Context, contactID int) (int, error) {
+	zap.L().Info("chatwoot: 🔍 buscando ou criando conversa",
+		zap.Int("contactId", contactID))
+
 	id, err := c.findOpenConversation(ctx, contactID)
 	if err != nil {
+		zap.L().Error("chatwoot: ❌ erro ao buscar conversa aberta",
+			zap.Error(err),
+			zap.Int("contactId", contactID))
 		return 0, err
 	}
+
 	if id > 0 {
+		zap.L().Info("chatwoot: ✅ conversa aberta ENCONTRADA",
+			zap.Int("conversationId", id),
+			zap.Int("contactId", contactID))
 		return id, nil
 	}
-	return c.createConversation(ctx, contactID)
+
+	zap.L().Info("chatwoot: 📝 criando NOVA conversa",
+		zap.Int("contactId", contactID))
+
+	newID, err := c.createConversation(ctx, contactID)
+	if err != nil {
+		zap.L().Error("chatwoot: ❌ erro ao criar nova conversa",
+			zap.Error(err),
+			zap.Int("contactId", contactID))
+		return 0, err
+	}
+
+	zap.L().Info("chatwoot: ✅ nova conversa CRIADA",
+		zap.Int("conversationId", newID),
+		zap.Int("contactId", contactID))
+
+	return newID, nil
 }
 
 func (c *ChatwootService) findOpenConversation(ctx context.Context, contactID int) (int, error) {
 	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/%d/conversations",
 		c.config.URL, c.config.AccountID, contactID)
 
+	zap.L().Info("chatwoot: 🔍 buscando conversas do contato",
+		zap.Int("contactId", contactID),
+		zap.String("url", url))
+
 	resp, err := c.doRequest(ctx, "GET", url, nil)
 	if err != nil {
+		zap.L().Error("chatwoot: ❌ erro na requisição de conversas",
+			zap.Error(err))
 		return 0, err
 	}
 	defer resp.Body.Close()
 
 	var result chatwootConversationsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		zap.L().Error("chatwoot: ❌ erro ao decodificar resposta de conversas",
+			zap.Error(err))
 		return 0, err
 	}
-	for _, conv := range result.Payload {
+
+	zap.L().Info("chatwoot: 📊 conversas encontradas",
+		zap.Int("total", len(result.Payload)),
+		zap.Int("inboxId", c.config.InboxID))
+
+	for i, conv := range result.Payload {
+		zap.L().Info("chatwoot: 📋 analisando conversa",
+			zap.Int("index", i),
+			zap.Int("conversationId", conv.ID),
+			zap.Int("inboxId", conv.InboxID),
+			zap.String("status", conv.Status),
+			zap.Bool("matchInbox", conv.InboxID == c.config.InboxID),
+			zap.Bool("notResolved", conv.Status != "resolved"))
+
 		if conv.InboxID == c.config.InboxID && conv.Status != "resolved" {
+			zap.L().Info("chatwoot: ✅ conversa aberta ENCONTRADA (match)",
+				zap.Int("conversationId", conv.ID))
 			return conv.ID, nil
 		}
 	}
+
+	zap.L().Info("chatwoot: ⚠️ nenhuma conversa aberta encontrada")
 	return 0, nil
 }
 
@@ -393,16 +469,37 @@ func (c *ChatwootService) createConversation(ctx context.Context, contactID int)
 		"inbox_id":   fmt.Sprintf("%d", c.config.InboxID),
 	}
 
+	zap.L().Info("chatwoot: 📝 criando nova conversa via API",
+		zap.Int("contactId", contactID),
+		zap.Int("inboxId", c.config.InboxID),
+		zap.String("url", url))
+
 	resp, err := c.doRequest(ctx, "POST", url, body)
 	if err != nil {
+		zap.L().Error("chatwoot: ❌ erro na requisição de criar conversa",
+			zap.Error(err))
 		return 0, err
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		zap.L().Error("chatwoot: ❌ erro do servidor ao criar conversa",
+			zap.Int("statusCode", resp.StatusCode),
+			zap.String("response", string(raw)))
+		return 0, fmt.Errorf("erro ao criar conversa: %d - %s", resp.StatusCode, string(raw))
+	}
+
 	var result chatwootConversationCreateResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		zap.L().Error("chatwoot: ❌ erro ao decodificar resposta de criar conversa",
+			zap.Error(err))
 		return 0, err
 	}
+
+	zap.L().Info("chatwoot: ✅ conversa criada com sucesso",
+		zap.Int("conversationId", result.ID))
+
 	return result.ID, nil
 }
 
