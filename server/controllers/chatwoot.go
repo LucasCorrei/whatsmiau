@@ -28,10 +28,14 @@ type ChatwootWebhook struct {
 	Event       string `json:"event"`
 	MessageType string `json:"message_type"`
 	Content     string `json:"content"`
+	Private     bool   `json:"private"`
+	SourceID    string `json:"source_id"`
+
 	Attachments []struct {
 		FileType string `json:"file_type"`
 		DataURL  string `json:"data_url"`
 	} `json:"attachments"`
+
 	Conversation struct {
 		Meta struct {
 			Sender struct {
@@ -68,6 +72,7 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 	}
 
 	instanceID := instances[0].ID
+
 	jidString := payload.Conversation.Meta.Sender.Identifier
 	if jidString == "" {
 		return ctx.JSON(http.StatusBadRequest, map[string]string{
@@ -96,6 +101,7 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 			RemoteJID:  &jid,
 			Presence:   types.ChatPresenceComposing,
 		})
+		return ctx.JSON(http.StatusOK, map[string]string{"status": "typing_on"})
 
 	// =============================
 	// Digitando OFF
@@ -106,15 +112,31 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 			RemoteJID:  &jid,
 			Presence:   types.ChatPresencePaused,
 		})
+		return ctx.JSON(http.StatusOK, map[string]string{"status": "typing_off"})
 
 	// =============================
 	// Nova mensagem
 	// =============================
 	case "message_created":
-		// Só envia se for mensagem do agente
+
+		// 🔴 Ignora se não for mensagem do agente
 		if payload.MessageType != "outgoing" {
 			return ctx.JSON(http.StatusOK, map[string]string{
-				"status": "ignored",
+				"status": "ignored_not_outgoing",
+			})
+		}
+
+		// 🔴 Ignora mensagem privada
+		if payload.Private {
+			return ctx.JSON(http.StatusOK, map[string]string{
+				"status": "ignored_private",
+			})
+		}
+
+		// 🔴 Ignora se já tiver source_id (já foi enviada ao canal)
+		if payload.SourceID != "" {
+			return ctx.JSON(http.StatusOK, map[string]string{
+				"status": "ignored_already_has_source_id",
 			})
 		}
 
@@ -139,6 +161,7 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 		// =============================
 		for _, att := range payload.Attachments {
 			switch att.FileType {
+
 			case "audio":
 				_, err := c.whatsmiau.SendAudio(ctx.Request().Context(), &whatsmiau.SendAudioRequest{
 					InstanceID: instanceID,
@@ -169,8 +192,8 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 					InstanceID: instanceID,
 					RemoteJID:  &jid,
 					MediaURL:   att.DataURL,
-					FileName:   "document.pdf",
-					Mimetype:   "application/pdf",
+					FileName:   "document",
+					Mimetype:   "application/octet-stream",
 				})
 				if err != nil {
 					return ctx.JSON(http.StatusInternalServerError, map[string]string{
@@ -179,9 +202,13 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 				}
 			}
 		}
+
+		return ctx.JSON(http.StatusOK, map[string]string{
+			"status": "sent_to_whatsapp",
+		})
 	}
 
 	return ctx.JSON(http.StatusOK, map[string]string{
-		"status": "ok",
+		"status": "ignored_event",
 	})
 }
