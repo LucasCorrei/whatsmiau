@@ -2,7 +2,7 @@ package controllers
 
 import (
 	"net/http"
-	"strings"
+
 	"github.com/labstack/echo/v4"
 	"github.com/verbeux-ai/whatsmiau/interfaces"
 	"github.com/verbeux-ai/whatsmiau/lib/whatsmiau"
@@ -30,12 +30,6 @@ type ChatwootWebhook struct {
 	Content     string `json:"content"`
 	Private     bool   `json:"private"`
 	SourceID    string `json:"source_id"`
-
-	ContentAttributes struct {
-		InReplyTo           int    `json:"in_reply_to"`
-		InReplyToExternalID string `json:"in_reply_to_external_id"`
-		ExternalError       any    `json:"external_error"`
-	} `json:"content_attributes"`
 
 	Attachments []struct {
 		FileType string `json:"file_type"`
@@ -78,6 +72,7 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 	}
 
 	instanceID := instances[0].ID
+
 	jidString := payload.Conversation.Meta.Sender.Identifier
 	if jidString == "" {
 		return ctx.JSON(http.StatusBadRequest, map[string]string{
@@ -106,6 +101,7 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 			RemoteJID:  &jid,
 			Presence:   types.ChatPresenceComposing,
 		})
+		return ctx.JSON(http.StatusOK, map[string]string{"status": "typing_on"})
 
 	// =============================
 	// Digitando OFF
@@ -116,53 +112,34 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 			RemoteJID:  &jid,
 			Presence:   types.ChatPresencePaused,
 		})
+		return ctx.JSON(http.StatusOK, map[string]string{"status": "typing_off"})
 
 	// =============================
 	// Nova mensagem
 	// =============================
 	case "message_created":
-		// Só envia se for mensagem do agente
+
+		// 🔴 Ignora se não for mensagem do agente
 		if payload.MessageType != "outgoing" {
 			return ctx.JSON(http.StatusOK, map[string]string{
-				"status": "ignored",
-			})
-		}
-	// ======================================
-	// REACTION (se estiver respondendo msg)
-	// ======================================
-	if payload.ContentAttributes.InReplyToExternalID != "" {
-
-		externalID := payload.ContentAttributes.InReplyToExternalID
-
-		// Remove prefixo WAID:
-		messageID := strings.TrimPrefix(externalID, "WAID:")
-
-		// Usa o conteúdo como reação
-		reaction := payload.Content
-		if reaction == "" {
-			reaction = "👍"
-		}
-
-		_, err := c.whatsmiau.SendReaction(
-			ctx.Request().Context(),
-			&whatsmiau.SendReactionRequest{
-				InstanceID: instanceID,
-				Reaction:   reaction,
-				RemoteJID:  &jid,
-				MessageID:  messageID,
-				FromMe:     false,
-			},
-		)
-		if err != nil {
-			return ctx.JSON(http.StatusInternalServerError, map[string]string{
-				"error": "failed to send reaction",
+				"status": "ignored_not_outgoing",
 			})
 		}
 
-		return ctx.JSON(http.StatusOK, map[string]string{
-			"status": "reaction_sent",
-		})
-	}
+		// 🔴 Ignora mensagem privada
+		if payload.Private {
+			return ctx.JSON(http.StatusOK, map[string]string{
+				"status": "ignored_private",
+			})
+		}
+
+		// 🔴 Ignora se já tiver source_id (já foi enviada ao canal)
+		if payload.SourceID != "" {
+			return ctx.JSON(http.StatusOK, map[string]string{
+				"status": "ignored_already_has_source_id",
+			})
+		}
+
 		// =============================
 		// TEXTO
 		// =============================
@@ -184,6 +161,7 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 		// =============================
 		for _, att := range payload.Attachments {
 			switch att.FileType {
+
 			case "audio":
 				_, err := c.whatsmiau.SendAudio(ctx.Request().Context(), &whatsmiau.SendAudioRequest{
 					InstanceID: instanceID,
@@ -214,8 +192,8 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 					InstanceID: instanceID,
 					RemoteJID:  &jid,
 					MediaURL:   att.DataURL,
-					FileName:   "document.pdf",
-					Mimetype:   "application/pdf",
+					FileName:   "document",
+					Mimetype:   "application/octet-stream",
 				})
 				if err != nil {
 					return ctx.JSON(http.StatusInternalServerError, map[string]string{
@@ -224,9 +202,13 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 				}
 			}
 		}
+
+		return ctx.JSON(http.StatusOK, map[string]string{
+			"status": "sent_to_whatsapp",
+		})
 	}
 
 	return ctx.JSON(http.StatusOK, map[string]string{
-		"status": "ok",
+		"status": "ignored_event",
 	})
 }
