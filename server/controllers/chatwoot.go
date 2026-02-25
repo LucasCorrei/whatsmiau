@@ -31,6 +31,12 @@ type ChatwootWebhook struct {
 	Private     bool   `json:"private"`
 	SourceID    string `json:"source_id"`
 
+	ContentAttributes struct {
+		InReplyTo           int    `json:"in_reply_to"`
+		InReplyToExternalID string `json:"in_reply_to_external_id"`
+		ExternalError       any    `json:"external_error"`
+	} `json:"content_attributes"`
+
 	Attachments []struct {
 		FileType string `json:"file_type"`
 		DataURL  string `json:"data_url"`
@@ -139,7 +145,44 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 				"status": "ignored_already_has_source_id",
 			})
 		}
+		// ======================================
+// REACTION (se estiver respondendo msg)
+// ======================================
+if payload.ContentAttributes.InReplyToExternalID != "" {
 
+	externalID := payload.ContentAttributes.InReplyToExternalID
+
+	// Remove prefixo WAID:
+	messageID := strings.TrimPrefix(externalID, "WAID:")
+
+	// Se o conteúdo tiver algo, usa como emoji
+	reaction := payload.Content
+
+	if reaction == "" {
+		reaction = "👍" // fallback opcional
+	}
+
+	_, err := c.whatsmiau.SendReaction(
+		ctx.Request().Context(),
+		&whatsmiau.SendReactionRequest{
+			InstanceID: instanceID,
+			Reaction:   reaction,
+			RemoteJID:  &jid,
+			MessageID:  messageID,
+			FromMe:     false,
+		},
+	)
+
+	if err != nil {
+		return ctx.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "failed to send reaction",
+		})
+	}
+
+	return ctx.JSON(http.StatusOK, map[string]string{
+		"status": "reaction_sent",
+	})
+}
 		// =============================
 		// TEXTO
 		// =============================
