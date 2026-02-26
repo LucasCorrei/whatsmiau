@@ -36,21 +36,21 @@ func (s *Whatsmiau) SendText(ctx context.Context, data *SendText) (*SendTextResp
 	var extendedMessage *waE2E.ExtendedTextMessage
 	if len(data.QuoteMessage) > 0 && len(data.QuoteMessageID) > 0 {
 		extendedMessage = &waE2E.ExtendedTextMessage{
-			//ContextInfo: &waE2E.ContextInfo{ // TODO: implement quoted message
-			//	StanzaID:    &data.QuoteMessageID,
-			//	Participant: &rJid,
-			//	QuotedMessage: &waE2E.Message{
-			//		Conversation: &data.QuoteMessage,
-			//		ProtocolMessage: &waE2E.ProtocolMessage{
-			//			Key: &waCommon.MessageKey{
-			//				RemoteJID:   &rJid,
-			//				FromMe:      &[]bool{true}[0],
-			//				ID:          &data.QuoteMessageID,
-			//				Participant: nil,
-			//			},
-			//		},
-			//	},
-			//},
+			ContextInfo: &waE2E.ContextInfo{ // TODO: implement quoted message
+				StanzaID:    &data.QuoteMessageID,
+				Participant: &rJid,
+				QuotedMessage: &waE2E.Message{
+					Conversation: &data.QuoteMessage,
+					ProtocolMessage: &waE2E.ProtocolMessage{
+						Key: &waCommon.MessageKey{
+							RemoteJID:   &rJid,
+							FromMe:      &[]bool{true}[0],
+							ID:          &data.QuoteMessageID,
+							Participant: nil,
+						},
+					},
+				},
+			},
 		}
 	}
 
