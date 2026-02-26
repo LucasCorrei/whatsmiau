@@ -8,6 +8,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
 )
@@ -32,11 +33,11 @@ func (s *Whatsmiau) SendText(ctx context.Context, data *SendText) (*SendTextResp
 		return nil, whatsmeow.ErrClientIsNil
 	}
 
-	//rJid := data.RemoteJID.ToNonAD().String()
+	rJid := data.RemoteJID.ToNonAD().String()
 	var extendedMessage *waE2E.ExtendedTextMessage
 	if len(data.QuoteMessage) > 0 && len(data.QuoteMessageID) > 0 {
 		extendedMessage = &waE2E.ExtendedTextMessage{
-			ContextInfo: &waE2E.ContextInfo{ // TODO: implement quoted message
+			ContextInfo: &waE2E.ContextInfo{
 				StanzaID:    &data.QuoteMessageID,
 				Participant: &rJid,
 				QuotedMessage: &waE2E.Message{
@@ -50,8 +51,8 @@ func (s *Whatsmiau) SendText(ctx context.Context, data *SendText) (*SendTextResp
 						},
 					},
 				},
-			},
-		}
+				},
+			}
 	}
 
 	res, err := client.SendMessage(ctx, *data.RemoteJID, &waE2E.Message{
@@ -63,8 +64,8 @@ func (s *Whatsmiau) SendText(ctx context.Context, data *SendText) (*SendTextResp
 	}
 
 	return &SendTextResponse{
-		ID:        res.ID,
-		CreatedAt: res.Timestamp,
+	ID:        res.ID,
+	CreatedAt: res.Timestamp,
 	}, nil
 }
 
@@ -129,8 +130,8 @@ func (s *Whatsmiau) SendAudio(ctx context.Context, data *SendAudioRequest) (*Sen
 	}
 
 	return &SendAudioResponse{
-		ID:        res.ID,
-		CreatedAt: res.Timestamp,
+	ID:        res.ID,
+	CreatedAt: res.Timestamp,
 	}, nil
 }
 
@@ -189,8 +190,8 @@ func (s *Whatsmiau) SendDocument(ctx context.Context, data *SendDocumentRequest)
 	}
 
 	return &SendDocumentResponse{
-		ID:        res.ID,
-		CreatedAt: res.Timestamp,
+	ID:        res.ID,
+	CreatedAt: res.Timestamp,
 	}, nil
 }
 
@@ -250,8 +251,8 @@ func (s *Whatsmiau) SendImage(ctx context.Context, data *SendImageRequest) (*Sen
 	}
 
 	return &SendImageResponse{
-		ID:        res.ID,
-		CreatedAt: res.Timestamp,
+	ID:        res.ID,
+	CreatedAt: res.Timestamp,
 	}, nil
 }
 
@@ -262,7 +263,6 @@ type SendReactionRequest struct {
 	MessageID  string     `json:"message_id"`
 	FromMe     bool       `json:"from_me"`
 }
-
 type SendReactionResponse struct {
 	ID        string    `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
@@ -298,7 +298,7 @@ func (s *Whatsmiau) SendReaction(ctx context.Context, data *SendReactionRequest)
 	}
 
 	return &SendReactionResponse{
-		ID:        res.ID,
-		CreatedAt: res.Timestamp,
+	ID:        res.ID,
+	CreatedAt: res.Timestamp,
 	}, nil
 }
