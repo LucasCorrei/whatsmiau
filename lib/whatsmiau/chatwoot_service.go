@@ -794,13 +794,22 @@ func extractMediaMeta(data *WookMessageData) (filename, caption, mimetype string
 			filename = fmt.Sprintf("%s.%s", id, ext)
 		}
 		caption = msg.DocumentMessage.Caption
+	case msg.StickerMessage != nil:
+		mimetype = cleanMimetype(msg.StickerMessage.Mimetype, "image/webp")
 
+	// Sticker SEMPRE é webp no WhatsApp
+		if mimetype == "" || mimetype == "application/octet-stream" {
+			mimetype = "image/webp"
+		}
+
+		filename = fmt.Sprintf("%s.webp", id)
+		caption = ""
 	default:
 		filename = fmt.Sprintf("%s.bin", id)
 		mimetype = "application/octet-stream"
 	}
 
-	return filename, caption, mimetype
+		return filename, caption, mimetype
 }
 
 // cleanMimetype remove parâmetros extras como "; codecs=opus" e retorna fallback se vazio
