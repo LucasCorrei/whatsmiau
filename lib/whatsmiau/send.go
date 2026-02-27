@@ -27,33 +27,73 @@ type SendTextResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// SendText envia uma mensagem de texto com suporte a quoted (responder mensagens)
 func (s *Whatsmiau) SendText(ctx context.Context, data *SendText) (*SendTextResponse, error) {
 	client, ok := s.clients.Load(data.InstanceID)
 	if !ok {
 		return nil, whatsmeow.ErrClientIsNil
 	}
 
-	rJid := data.RemoteJID.ToNonAD().String()
-	var extendedMessage *waE2E.ExtendedTextMessage
-	if len(data.QuoteMessage) > 0 && len(data.QuoteMessageID) > 0 {
-		extendedMessage = &waE2E.ExtendedTextMessage{
-			ContextInfo: &waE2E.ContextInfo{
-				StanzaID:    &data.QuoteMessageID,
-				Participant: &rJid,
-				QuotedMessage: &waE2E.Message{
-					Conversation: &data.QuoteMessage,
-					ProtocolMessage: &waE2E.ProtocolMessage{
-						Key: &waCommon.MessageKey{
-							RemoteJID:   &rJid,
-							FromMe:      &[]bool{true}[0],
-							ID:          &data.QuoteMessageID,
-							Participant: nil,
-						},
-					},
-				},
+	// Criar a mensagem base
+	var message *waE2E.Message
+
+	// Verificar se tem quoted message
+	if len(data.QuoteMessageID) > 0 {
+		// Mensagem COM citação (quoted)
+		extendedMessage := &waE2E.ExtendedTextMessage{
+			Text: proto.String(data.Text),
+		}
+
+		// Preparar a mensagem quotada
+		var quotedMessage *waE2E.Message
+		if len(data.QuoteMessage) > 0 {
+			// Se temos o texto da mensagem original, criar ExtendedTextMessage
+			quotedMessage = &waE2E.Message{
+				ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+					Text: proto.String(data.QuoteMessage),
 				},
 			}
+		} else {
+			// Se não temos o texto, usar Conversation vazia
+			quotedMessage = &waE2E.Message{
+				Conversation: proto.String(""),
+			}
+		}
+
+		// Montar o ContextInfo com a mensagem citada
+		extendedMessage.ContextInfo = &waE2E.ContextInfo{
+			StanzaID:      proto.String(data.QuoteMessageID),
+			QuotedMessage: quotedMessage,
+		}
+
+		// Se for em grupo, adicionar o Participant
+		if data.RemoteJID.Server == "g.us" {
+			// Para grupos, o participant é necessário
+			participantJID := data.RemoteJID.ToNonAD().String()
+			extendedMessage.ContextInfo.Participant = proto.String(participantJID)
+		}
+
+		message = &waE2E.Message{
+			ExtendedTextMessage: extendedMessage,
+		}
+	} else {
+		// Mensagem SEM citação (comportamento normal)
+		message = &waE2E.Message{
+			Conversation: proto.String(data.Text),
+		}
 	}
+
+	// Enviar a mensagem
+	res, err := client.SendMessage(ctx, *data.RemoteJID, message)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SendTextResponse{
+		ID:        res.ID,
+		CreatedAt: res.Timestamp,
+	}, nil
+}
 
 	res, err := client.SendMessage(ctx, *data.RemoteJID, &waE2E.Message{
 		Conversation:        &data.Text,
