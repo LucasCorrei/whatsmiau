@@ -427,7 +427,21 @@ func (s *Whatsmiau) parseWAMessage(m *waE2E.Message) (string, *WookMessageRaw, *
 			JpegThumbnail:     b64(img.GetJPEGThumbnail()),
 			ViewOnce:          img.GetViewOnce(),
 		}
-	} else if aud := m.GetAudioMessage(); aud != nil {
+	} else if sticker := m.GetStickerMessage(); sticker != nil {
+		messageType = "stickerMessage"
+	
+		raw.StickerMessage = &WookStickerMessageRaw{
+			Url:           sticker.GetUrl(),
+			Mimetype:      sticker.GetMimetype(),
+			FileSha256:    sticker.GetFileSha256(),
+			FileEncSha256: sticker.GetFileEncSha256(),
+			MediaKey:      sticker.GetMediaKey(),
+			DirectPath:    sticker.GetDirectPath(),
+			IsAnimated:    sticker.GetIsAnimated(),
+		}
+
+		ci = sticker.GetContextInfo()
+	}else if aud := m.GetAudioMessage(); aud != nil {
 		messageType = "audioMessage"
 		ci = aud.GetContextInfo()
 		raw.AudioMessage = &WookAudioMessageRaw{
