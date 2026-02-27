@@ -867,9 +867,15 @@ func extractMessageText(data *WookMessageData) string {
 			return fmt.Sprintf("[Documento: %s]", msg.DocumentMessage.FileName)
 		}
 	}
-	if msg.ContactMessage != nil {
-		return fmt.Sprintf("[Contato: %s]", msg.ContactMessage.DisplayName)
-	}
+if msg.ContactMessage != nil {
+	// Opção 1: Se o número está no Vcard
+	vcard := msg.ContactMessage.GetVcard() // ou msg.ContactMessage.Vcard
+	displayName := msg.ContactMessage.DisplayName
+	return fmt.Sprintf("[Contato: %s - %s]", displayName, vcard)
+	
+	// Opção 2: Se o número está em uma propriedade separada
+	// return fmt.Sprintf("[Contato: %s - %s]", displayName, msg.ContactMessage.PhoneNumber)
+}
 	if msg.ReactionMessage != nil {
 		return fmt.Sprintf("[Reação: %s]", msg.ReactionMessage.Text)
 	}
