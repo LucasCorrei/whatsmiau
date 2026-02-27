@@ -99,6 +99,7 @@ type WookMessageRaw struct {
 	ContactMessage       *ContactMessageRaw       `json:"contactMessage,omitempty"`
 	ContactsArrayMessage *ContactsArrayMessageRaw `json:"contactsArrayMessage,omitempty"`
 	LocationMessage *WookLocationMessageRaw `json:"locationMessage,omitempty"`
+	StickerMessage *WookStickerMessageRaw `json:"stickerMessage,omitempty"`
 	//MessageContextInfo  WookMessageContextInfo `json:"messageContextInfo,omitempty"`
 
 	ListResponseMessage *WookListMessageRaw `json:"listResponseMessage,omitempty"`
@@ -273,5 +274,15 @@ type WookLocationMessageRaw struct {
 	Name             string  `json:"name,omitempty"`
 	Address          string  `json:"address,omitempty"`
 	Url              string  `json:"url,omitempty"`
+}
+
+type WookStickerMessageRaw struct {
+	Url           string `json:"url,omitempty"`
+	Mimetype      string `json:"mimetype,omitempty"`
+	FileSha256    string `json:"fileSha256,omitempty"`
+	FileEncSha256 string `json:"fileEncSha256,omitempty"`
+	MediaKey      string `json:"mediaKey,omitempty"`
+	DirectPath    string `json:"directPath,omitempty"`
+	IsAnimated    bool   `json:"isAnimated,omitempty"`
 }
 type WookContactUpsertData []WookContact
