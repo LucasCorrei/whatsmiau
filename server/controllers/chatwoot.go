@@ -194,7 +194,6 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 				RemoteJID:      &jid,
 				Text:           payload.Content,
 				QuoteMessageID: quotedMessageID,
-				QuoteMessage: payload.Content,
 			})
 
 			if err != nil {
