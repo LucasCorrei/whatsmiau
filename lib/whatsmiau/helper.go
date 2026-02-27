@@ -39,7 +39,48 @@ func u64(n uint64) string {
 func i64(n int64) string {
 	return strconv.FormatInt(n, 10)
 }
+type QuotedMessageParams struct {
+	QuoteMessageID string
+	QuoteMessage   string
+	RemoteJID      *types.JID
+	QuotedMessage  *waE2E.Message // Opcional
+}
 
+func BuildContextInfoWithQuoted(params QuotedMessageParams) *waE2E.ContextInfo {
+	if len(params.QuoteMessageID) == 0 {
+		return nil
+	}
+
+	var quotedMsg *waE2E.Message
+
+	if params.QuotedMessage != nil {
+		quotedMsg = params.QuotedMessage
+	} else {
+		if len(params.QuoteMessage) > 0 {
+			quotedMsg = &waE2E.Message{
+				ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+					Text: proto.String(params.QuoteMessage),
+				},
+			}
+		} else {
+			quotedMsg = &waE2E.Message{
+				Conversation: proto.String(""),
+			}
+		}
+	}
+
+	contextInfo := &waE2E.ContextInfo{
+		StanzaID:      proto.String(params.QuoteMessageID),
+		QuotedMessage: quotedMsg,
+	}
+
+	if params.RemoteJID != nil && params.RemoteJID.Server == "g.us" {
+		participantJID := params.RemoteJID.ToNonAD().String()
+		contextInfo.Participant = proto.String(participantJID)
+	}
+
+	return contextInfo
+}
 func (s *Whatsmiau) getCtx(ctx context.Context, url string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
