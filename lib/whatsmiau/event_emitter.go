@@ -663,6 +663,21 @@ func (s *Whatsmiau) convertEventMessage(id string, instance *models.Instance, ev
 		if img := m.GetImageMessage(); img != nil {
 			raw.MediaURL, raw.Base64 = s.uploadMessageFile(ctx, instance, client, img, img.GetMimetype(), "")
 		}
+	case "stickerMessage":
+		if st := m.GetStickerMessage(); st != nil {
+	
+			// 🔥 Força virar imagem
+			messageType = "imageMessage"
+	
+			raw.MediaURL, raw.Base64 = s.uploadMessageFile(
+				ctx,
+				instance,
+				client,
+				st,
+				"image/webp", // sticker sempre é webp
+				"",
+			)
+		}
 	case "audioMessage":
 		if aud := m.GetAudioMessage(); aud != nil {
 			raw.MediaURL, raw.Base64 = s.uploadMessageFile(ctx, instance, client, aud, aud.GetMimetype(), "")
