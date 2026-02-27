@@ -882,6 +882,23 @@ func extractMessageText(data *WookMessageData) string {
 
 		return fmt.Sprintf("Contato:\nNome: %s\nTelefone: %s", nome, telefone)
 	}
+	if msg.LocationMessage != nil {
+	nome := msg.LocationMessage.Name
+	endereco := msg.LocationMessage.Address
+	lat := msg.LocationMessage.DegreesLatitude
+	lng := msg.LocationMessage.DegreesLongitude
+
+	link := fmt.Sprintf("https://www.google.com/maps?q=%f,%f", lat, lng)
+
+	return fmt.Sprintf(
+		"Localização:\nNome: %s\nEndereço: %s\nLatitude: %f\nLongitude: %f\nMapa: %s",
+		nome,
+		endereco,
+		lat,
+		lng,
+		link,
+	)
+}
 	if msg.ReactionMessage != nil {
 		return fmt.Sprintf("[Reação: %s]", msg.ReactionMessage.Text)
 	}
