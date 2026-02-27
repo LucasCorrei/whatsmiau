@@ -229,6 +229,7 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 					RemoteJID:      &jid,
 					MediaURL:       att.DataURL,
 					Mimetype:       "image/jpeg",
+					QuoteMessageID: quotedMessageID,
 				})
 				if err != nil {
 					return ctx.JSON(http.StatusInternalServerError, map[string]string{
@@ -243,6 +244,7 @@ func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
 					MediaURL:       att.DataURL,
 					FileName:       "document",
 					Mimetype:       "application/octet-stream",
+					QuoteMessageID: quotedMessageID,
 				})
 				if err != nil {
 					return ctx.JSON(http.StatusInternalServerError, map[string]string{
