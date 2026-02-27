@@ -429,19 +429,19 @@ func (s *Whatsmiau) parseWAMessage(m *waE2E.Message) (string, *WookMessageRaw, *
 		}
 	} else if sticker := m.GetStickerMessage(); sticker != nil {
 		messageType = "stickerMessage"
-	
+
 		raw.StickerMessage = &WookStickerMessageRaw{
-			Url:           sticker.GetUrl(),
+			Url:           sticker.GetURL(),
 			Mimetype:      sticker.GetMimetype(),
-			FileSha256:    sticker.GetFileSha256(),
-			FileEncSha256: sticker.GetFileEncSha256(),
-			MediaKey:      sticker.GetMediaKey(),
+			FileSha256:    base64.StdEncoding.EncodeToString(sticker.GetFileSHA256()),
+			FileEncSha256: base64.StdEncoding.EncodeToString(sticker.GetFileEncSHA256()),
+			MediaKey:      base64.StdEncoding.EncodeToString(sticker.GetMediaKey()),
 			DirectPath:    sticker.GetDirectPath(),
 			IsAnimated:    sticker.GetIsAnimated(),
 		}
 
 		ci = sticker.GetContextInfo()
-	}else if aud := m.GetAudioMessage(); aud != nil {
+	} else if aud := m.GetAudioMessage(); aud != nil {
 		messageType = "audioMessage"
 		ci = aud.GetContextInfo()
 		raw.AudioMessage = &WookAudioMessageRaw{
