@@ -868,7 +868,19 @@ func extractMessageText(data *WookMessageData) string {
 		}
 	}
 	if msg.ContactMessage != nil {
-    	return fmt.Sprintf("ContactMessage: %+v\n", msg.ContactMessage)
+		nome := msg.ContactMessage.DisplayName
+		vcard := msg.ContactMessage.VCard
+
+		// Regex para pegar o waid (telefone puro)
+		re := regexp.MustCompile(`waid=(\d+)`)
+		match := re.FindStringSubmatch(vcard)
+
+		telefone := ""
+		if len(match) > 1 {
+			telefone = match[1]
+		}
+
+		return fmt.Sprintf("Contato:\nNome: %s\nTelefone: %s", nome, telefone)
 	}
 	if msg.ReactionMessage != nil {
 		return fmt.Sprintf("[Reação: %s]", msg.ReactionMessage.Text)
