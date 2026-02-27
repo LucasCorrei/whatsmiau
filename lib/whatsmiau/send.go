@@ -151,12 +151,15 @@ func (s *Whatsmiau) SendAudio(ctx context.Context, data *SendAudioRequest) (*Sen
 }
 
 type SendDocumentRequest struct {
-	InstanceID string     `json:"instance_id"`
-	MediaURL   string     `json:"media_url"`
-	Caption    string     `json:"caption"`
-	FileName   string     `json:"file_name"`
-	RemoteJID  *types.JID `json:"remote_jid"`
-	Mimetype   string     `json:"mimetype"`
+	InstanceID     string         `json:"instance_id"`
+	MediaURL       string         `json:"media_url"`
+	Caption        string         `json:"caption"`
+	FileName       string         `json:"file_name"`
+	RemoteJID      *types.JID     `json:"remote_jid"`
+	Mimetype       string         `json:"mimetype"`
+	QuoteMessageID string         `json:"quote_message_id"`
+	QuoteMessage   string         `json:"quote_message"`
+	QuotedMessage  *waE2E.Message `json:"quoted_message,omitempty"`
 }
 
 type SendDocumentResponse struct {
@@ -185,38 +188,54 @@ func (s *Whatsmiau) SendDocument(ctx context.Context, data *SendDocumentRequest)
 		return nil, err
 	}
 
-	doc := waE2E.DocumentMessage{
+	doc := &waE2E.DocumentMessage{
 		URL:           proto.String(uploaded.URL),
 		Mimetype:      proto.String(data.Mimetype),
 		FileSHA256:    uploaded.FileSHA256,
 		FileLength:    proto.Uint64(uploaded.FileLength),
 		MediaKey:      uploaded.MediaKey,
-		FileName:      &data.FileName,
+		FileName:      proto.String(data.FileName),
 		FileEncSHA256: uploaded.FileEncSHA256,
 		DirectPath:    proto.String(uploaded.DirectPath),
 		Caption:       proto.String(data.Caption),
 	}
 
+	// Adicionar suporte a quoted message
+	contextInfo := BuildContextInfoWithQuoted(QuotedMessageParams{
+		QuoteMessageID: data.QuoteMessageID,
+		QuoteMessage:   data.QuoteMessage,
+		RemoteJID:      data.RemoteJID,
+		QuotedMessage:  data.QuotedMessage,
+	})
+
+	if contextInfo != nil {
+		doc.ContextInfo = contextInfo
+	}
+
 	res, err := client.SendMessage(ctx, *data.RemoteJID, &waE2E.Message{
-		DocumentMessage: &doc,
+		DocumentMessage: doc,
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	return &SendDocumentResponse{
-	ID:        res.ID,
-	CreatedAt: res.Timestamp,
+		ID:        res.ID,
+		CreatedAt: res.Timestamp,
 	}, nil
 }
 
 type SendImageRequest struct {
-	InstanceID string     `json:"instance_id"`
-	MediaURL   string     `json:"media_url"`
-	Caption    string     `json:"caption"`
-	RemoteJID  *types.JID `json:"remote_jid"`
-	Mimetype   string     `json:"mimetype"`
+	InstanceID     string         `json:"instance_id"`
+	MediaURL       string         `json:"media_url"`
+	Caption        string         `json:"caption"`
+	RemoteJID      *types.JID     `json:"remote_jid"`
+	Mimetype       string         `json:"mimetype"`
+	QuoteMessageID string         `json:"quote_message_id"`
+	QuoteMessage   string         `json:"quote_message"`
+	QuotedMessage  *waE2E.Message `json:"quoted_message,omitempty"`
 }
+
 type SendImageResponse struct {
 	ID        string    `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
@@ -245,9 +264,12 @@ func (s *Whatsmiau) SendImage(ctx context.Context, data *SendImageRequest) (*Sen
 
 	if data.Mimetype == "" {
 		data.Mimetype, err = extractMimetype(dataBytes, uploaded.URL)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	doc := waE2E.ImageMessage{
+	img := &waE2E.ImageMessage{
 		URL:           proto.String(uploaded.URL),
 		Mimetype:      proto.String(data.Mimetype),
 		Caption:       proto.String(data.Caption),
@@ -258,16 +280,28 @@ func (s *Whatsmiau) SendImage(ctx context.Context, data *SendImageRequest) (*Sen
 		DirectPath:    proto.String(uploaded.DirectPath),
 	}
 
+	// Adicionar suporte a quoted message
+	contextInfo := BuildContextInfoWithQuoted(QuotedMessageParams{
+		QuoteMessageID: data.QuoteMessageID,
+		QuoteMessage:   data.QuoteMessage,
+		RemoteJID:      data.RemoteJID,
+		QuotedMessage:  data.QuotedMessage,
+	})
+
+	if contextInfo != nil {
+		img.ContextInfo = contextInfo
+	}
+
 	res, err := client.SendMessage(ctx, *data.RemoteJID, &waE2E.Message{
-		ImageMessage: &doc,
+		ImageMessage: img,
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	return &SendImageResponse{
-	ID:        res.ID,
-	CreatedAt: res.Timestamp,
+		ID:        res.ID,
+		CreatedAt: res.Timestamp,
 	}, nil
 }
 
@@ -278,6 +312,7 @@ type SendReactionRequest struct {
 	MessageID  string     `json:"message_id"`
 	FromMe     bool       `json:"from_me"`
 }
+
 type SendReactionResponse struct {
 	ID        string    `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
