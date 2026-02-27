@@ -44,36 +44,18 @@ func (s *Instance) Create(ctx echo.Context) error {
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
 	}
 
+	// 🔹 Garante ID baseado no nome
 	request.ID = request.InstanceName
 
 	if request.Instance == nil {
-		request.Instance = &models.Instance{
-			ID: request.InstanceName,
-		}
-	} else {
-		request.Instance.ID = request.InstanceName
+		request.Instance = &models.Instance{}
 	}
 
-	request.RemoteJID = ""
+	request.Instance.ID = request.InstanceName
+	request.Instance.RemoteJID = ""
 
-	// ==============================
-	// CHATWOOT (OPCIONAL)
-	// ==============================
-	request.Instance.ChatwootAccountID = request.ChatwootAccountID
-	request.Instance.ChatwootToken = request.ChatwootToken
-	request.Instance.ChatwootURL = request.ChatwootURL
-
-	// ==============================
-	// PROXY (OPCIONAL)
-	// ==============================
-	if request.ProxyHost != "" {
-		request.Instance.ProxyHost = request.ProxyHost
-		request.Instance.ProxyPort = request.ProxyPort
-		request.Instance.ProxyProtocol = request.ProxyProtocol
-		request.Instance.ProxyUsername = request.ProxyUsername
-		request.Instance.ProxyPassword = request.ProxyPassword
-	} else if len(env.Env.ProxyAddresses) > 0 {
-		// fallback via ENV
+	// 🔹 Proxy automático via ENV (se não enviado)
+	if request.Instance.ProxyHost == "" && len(env.Env.ProxyAddresses) > 0 {
 		rd := rand.IntN(len(env.Env.ProxyAddresses))
 		proxyUrl := env.Env.ProxyAddresses[rd]
 
@@ -89,9 +71,6 @@ func (s *Instance) Create(ctx echo.Context) error {
 		request.Instance.ProxyPassword = proxy.ProxyPassword
 	}
 
-	// ==============================
-	// SAVE INSTANCE
-	// ==============================
 	c := ctx.Request().Context()
 
 	if err := s.repo.Create(c, request.Instance); err != nil {
