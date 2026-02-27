@@ -517,7 +517,7 @@ func (s *Whatsmiau) parseWAMessage(m *waE2E.Message) (string, *WookMessageRaw, *
 		DegreesLongitude: loc.GetDegreesLongitude(),
 		Name:             loc.GetName(),
 		Address:          loc.GetAddress(),
-		Url:              loc.GetUrl(),
+		Url:              loc.GetURL(),
 	}
 
 	ci = loc.GetContextInfo()
