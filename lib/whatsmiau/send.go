@@ -73,7 +73,7 @@ type SendAudioRequest struct {
 	RemoteJID      *types.JID `json:"remote_jid"`
 	QuoteMessageID string     `json:"quote_message_id"`
 	QuoteMessage   string     `json:"quote_message"`
-	Participant    *types.JID `json:"participant"`
+	QuotedMessage  *waE2E.Message `json:"quoted_message,omitempty"` // Opcional: mensagem quotada completa
 }
 
 type SendAudioResponse struct {
@@ -87,6 +87,7 @@ func (s *Whatsmiau) SendAudio(ctx context.Context, data *SendAudioRequest) (*Sen
 		return nil, whatsmeow.ErrClientIsNil
 	}
 
+	// Baixar o áudio da URL
 	resAudio, err := s.getCtx(ctx, data.AudioURL)
 	if err != nil {
 		return nil, err
@@ -97,17 +98,20 @@ func (s *Whatsmiau) SendAudio(ctx context.Context, data *SendAudioRequest) (*Sen
 		return nil, err
 	}
 
+	// Converter o áudio
 	audioData, waveForm, secs, err := convertAudio(dataBytes, 64)
 	if err != nil {
 		return nil, err
 	}
 
+	// Upload do áudio
 	uploaded, err := client.Upload(ctx, audioData, whatsmeow.MediaAudio)
 	if err != nil {
 		return nil, err
 	}
 
-	audio := waE2E.AudioMessage{
+	// Criar a mensagem de áudio
+	audio := &waE2E.AudioMessage{
 		URL:           proto.String(uploaded.URL),
 		Mimetype:      proto.String("audio/ogg; codecs=opus"),
 		FileSHA256:    uploaded.FileSHA256,
@@ -120,16 +124,29 @@ func (s *Whatsmiau) SendAudio(ctx context.Context, data *SendAudioRequest) (*Sen
 		Waveform:      waveForm,
 	}
 
+	// Adicionar suporte a quoted message usando o helper
+	contextInfo := BuildContextInfoWithQuoted(QuotedMessageParams{
+		QuoteMessageID: data.QuoteMessageID,
+		QuoteMessage:   data.QuoteMessage,
+		RemoteJID:      data.RemoteJID,
+		QuotedMessage:  data.QuotedMessage,
+	})
+
+	if contextInfo != nil {
+		audio.ContextInfo = contextInfo
+	}
+
+	// Enviar a mensagem
 	res, err := client.SendMessage(ctx, *data.RemoteJID, &waE2E.Message{
-		AudioMessage: &audio,
+		AudioMessage: audio,
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	return &SendAudioResponse{
-	ID:        res.ID,
-	CreatedAt: res.Timestamp,
+		ID:        res.ID,
+		CreatedAt: res.Timestamp,
 	}, nil
 }
 
