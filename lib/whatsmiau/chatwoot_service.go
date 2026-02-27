@@ -39,9 +39,9 @@ func NewChatwootService(config ChatwootConfig) *ChatwootService {
 	}
 
 	// Se o Chatwoot não está habilitado, retorna sem inicializar nada
-	if !env.Env.ChatwootEnabled {
-		zap.L().Info("chatwoot: serviço desabilitado via CHATWOOT_ENABLED=false")
-		return service
+	if config.URL == "" || config.Token == "" || config.AccountID == "" {
+   		 zap.L().Info("chatwoot: desabilitado para esta instância (config incompleta)")
+  	return service
 	}
 
 	zap.L().Info("chatwoot: serviço HABILITADO")
@@ -106,7 +106,9 @@ func (c *ChatwootService) Close() error {
 
 // IsEnabled verifica se o Chatwoot está habilitado
 func (c *ChatwootService) IsEnabled() bool {
-	return env.Env.ChatwootEnabled
+    return c.config.URL != "" &&
+           c.config.Token != "" &&
+           c.config.AccountID != ""
 }
 
 // ── Tipos de resposta da API ──────────────────────────────────────────────────
@@ -142,8 +144,8 @@ type chatwootConversationCreateResponse struct {
 
 func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 	// Verifica se está habilitado
-	if !env.Env.ChatwootEnabled {
-		return
+	if !c.IsEnabled() {
+    	return
 	}
 
 	if messageData == nil || messageData.Key == nil {
