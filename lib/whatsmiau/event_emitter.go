@@ -427,24 +427,21 @@ func (s *Whatsmiau) parseWAMessage(m *waE2E.Message) (string, *WookMessageRaw, *
 			JpegThumbnail:     b64(img.GetJPEGThumbnail()),
 			ViewOnce:          img.GetViewOnce(),
 		}
-	} else if sticker := m.GetStickerMessage(); sticker != nil {
-		messageType = "imageMessage"
-		ci = sticker.GetContextInfo()
+	
+	}	 else if sticker := m.GetStickerMessage(); sticker != nil {
+			messageType = "stickerMessage"
 
-	// } else if sticker := m.GetStickerMessage(); sticker != nil {
-	// 	messageType = "stickerMessage"
+			raw.StickerMessage = &WookStickerMessageRaw{
+				Url:           sticker.GetURL(),
+				Mimetype:      sticker.GetMimetype(),
+				FileSha256:    base64.StdEncoding.EncodeToString(sticker.GetFileSHA256()),
+				FileEncSha256: base64.StdEncoding.EncodeToString(sticker.GetFileEncSHA256()),
+				MediaKey:      base64.StdEncoding.EncodeToString(sticker.GetMediaKey()),
+				DirectPath:    sticker.GetDirectPath(),
+				IsAnimated:    sticker.GetIsAnimated(),
+			}
 
-	// 	raw.StickerMessage = &WookStickerMessageRaw{
-	// 		Url:           sticker.GetURL(),
-	// 		Mimetype:      sticker.GetMimetype(),
-	// 		FileSha256:    base64.StdEncoding.EncodeToString(sticker.GetFileSHA256()),
-	// 		FileEncSha256: base64.StdEncoding.EncodeToString(sticker.GetFileEncSHA256()),
-	// 		MediaKey:      base64.StdEncoding.EncodeToString(sticker.GetMediaKey()),
-	// 		DirectPath:    sticker.GetDirectPath(),
-	// 		IsAnimated:    sticker.GetIsAnimated(),
-	// 	}
-
-	// 	ci = sticker.GetContextInfo()
+			ci = sticker.GetContextInfo()
 	} else if aud := m.GetAudioMessage(); aud != nil {
 		messageType = "audioMessage"
 		ci = aud.GetContextInfo()
