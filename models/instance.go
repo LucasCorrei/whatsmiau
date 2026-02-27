@@ -2,9 +2,11 @@ package models
 
 
 type InstanceWebhook struct {
-    Url    string   `json:"url,omitempty"`
-    Base64 *bool    `json:"base64,omitempty"`
-    Events []string `json:"events,omitempty"`
+    Url      string            `json:"url,omitempty"`
+    Base64   *bool             `json:"base64,omitempty"`
+    ByEvents bool              `json:"byEvents,omitempty"`
+    Headers  map[string]string `json:"headers,omitempty"`
+    Events   []string          `json:"events,omitempty"`
 }
 
 type InstanceProxy struct {
