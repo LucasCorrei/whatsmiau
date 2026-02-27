@@ -98,6 +98,7 @@ type WookMessageRaw struct {
 	ReactionMessage      *ReactionMessageRaw      `json:"reactionMessage,omitempty"`
 	ContactMessage       *ContactMessageRaw       `json:"contactMessage,omitempty"`
 	ContactsArrayMessage *ContactsArrayMessageRaw `json:"contactsArrayMessage,omitempty"`
+	LocationMessage *WookLocationMessageRaw `json:"locationMessage,omitempty"`
 	//MessageContextInfo  WookMessageContextInfo `json:"messageContextInfo,omitempty"`
 
 	ListResponseMessage *WookListMessageRaw `json:"listResponseMessage,omitempty"`
@@ -266,4 +267,11 @@ type WookContact struct {
 	Base64Pic     string `json:"base64Pic,omitempty"`
 }
 
+type WookLocationMessageRaw struct {
+	DegreesLatitude  float64 `json:"degreesLatitude,omitempty"`
+	DegreesLongitude float64 `json:"degreesLongitude,omitempty"`
+	Name             string  `json:"name,omitempty"`
+	Address          string  `json:"address,omitempty"`
+	Url              string  `json:"url,omitempty"`
+}
 type WookContactUpsertData []WookContact
