@@ -35,6 +35,7 @@ func NewInstances(repository interfaces.InstanceRepository, whatsmiau *whatsmiau
 
 func (s *Instance) Create(ctx echo.Context) error {
 	var request dto.CreateInstanceRequest
+
 	if err := ctx.Bind(&request); err != nil {
 		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
 	}
@@ -44,6 +45,7 @@ func (s *Instance) Create(ctx echo.Context) error {
 	}
 
 	request.ID = request.InstanceName
+
 	if request.Instance == nil {
 		request.Instance = &models.Instance{
 			ID: request.InstanceName,
@@ -51,9 +53,27 @@ func (s *Instance) Create(ctx echo.Context) error {
 	} else {
 		request.Instance.ID = request.InstanceName
 	}
+
 	request.RemoteJID = ""
 
-	if len(request.ProxyHost) <= 0 && len(env.Env.ProxyAddresses) > 0 {
+	// ==============================
+	// CHATWOOT (OPCIONAL)
+	// ==============================
+	request.Instance.ChatwootAccountID = request.ChatwootAccountID
+	request.Instance.ChatwootToken = request.ChatwootToken
+	request.Instance.ChatwootURL = request.ChatwootURL
+
+	// ==============================
+	// PROXY (OPCIONAL)
+	// ==============================
+	if request.ProxyHost != "" {
+		request.Instance.ProxyHost = request.ProxyHost
+		request.Instance.ProxyPort = request.ProxyPort
+		request.Instance.ProxyProtocol = request.ProxyProtocol
+		request.Instance.ProxyUsername = request.ProxyUsername
+		request.Instance.ProxyPassword = request.ProxyPassword
+	} else if len(env.Env.ProxyAddresses) > 0 {
+		// fallback via ENV
 		rd := rand.IntN(len(env.Env.ProxyAddresses))
 		proxyUrl := env.Env.ProxyAddresses[rd]
 
@@ -61,10 +81,19 @@ func (s *Instance) Create(ctx echo.Context) error {
 		if err != nil {
 			return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "invalid proxy url on env")
 		}
-		request.InstanceProxy = *proxy
+
+		request.Instance.ProxyHost = proxy.ProxyHost
+		request.Instance.ProxyPort = proxy.ProxyPort
+		request.Instance.ProxyProtocol = proxy.ProxyProtocol
+		request.Instance.ProxyUsername = proxy.ProxyUsername
+		request.Instance.ProxyPassword = proxy.ProxyPassword
 	}
 
+	// ==============================
+	// SAVE INSTANCE
+	// ==============================
 	c := ctx.Request().Context()
+
 	if err := s.repo.Create(c, request.Instance); err != nil {
 		zap.L().Error("failed to create instance", zap.Error(err))
 		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to create instance")
@@ -77,6 +106,7 @@ func (s *Instance) Create(ctx echo.Context) error {
 
 func (s *Instance) Update(ctx echo.Context) error {
 	var request dto.UpdateInstanceRequest
+
 	if err := ctx.Bind(&request); err != nil {
 		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
 	}
@@ -86,24 +116,52 @@ func (s *Instance) Update(ctx echo.Context) error {
 	}
 
 	c := ctx.Request().Context()
-	instance, err := s.repo.Update(c, request.ID, &models.Instance{
-		ID: request.ID,
-		Webhook: models.InstanceWebhook{
-			Url:    request.Webhook.URL,
-			Base64: &[]bool{request.Webhook.Base64}[0],
-			Events: request.Webhook.Events,
-		},
-	})
+
+	// 1️⃣ Buscar instância atual
+	currentList, err := s.repo.List(c, request.ID)
 	if err != nil {
-		if errors.Is(err, instances.ErrorNotFound) {
-			return utils.HTTPFail(ctx, http.StatusNotFound, err, "instance not found")
-		}
-		zap.L().Error("failed to create instance", zap.Error(err))
+		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to list instances")
+	}
+
+	if len(currentList) == 0 {
+		return utils.HTTPFail(ctx, http.StatusNotFound, err, "instance not found")
+	}
+
+	current := currentList[0]
+
+	// 2️⃣ Atualizar somente o que veio no request
+
+	if request.Webhook.URL != "" {
+		current.Webhook.Url = request.Webhook.URL
+	}
+
+	current.Webhook.Base64 = &request.Webhook.Base64
+	current.Webhook.Events = request.Webhook.Events
+
+	// Se você adicionar chatwoot no update:
+	if request.ChatwootURL != "" {
+		current.ChatwootURL = request.ChatwootURL
+		current.ChatwootToken = request.ChatwootToken
+		current.ChatwootAccountID = request.ChatwootAccountID
+	}
+
+	// Proxy opcional
+	if request.ProxyHost != "" {
+		current.ProxyHost = request.ProxyHost
+		current.ProxyPort = request.ProxyPort
+		current.ProxyProtocol = request.ProxyProtocol
+		current.ProxyUsername = request.ProxyUsername
+		current.ProxyPassword = request.ProxyPassword
+	}
+
+	// 3️⃣ Salvar
+	updated, err := s.repo.Update(c, request.ID, &current)
+	if err != nil {
 		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to update instance")
 	}
 
-	return ctx.JSON(http.StatusCreated, dto.UpdateInstanceResponse{
-		Instance: instance,
+	return ctx.JSON(http.StatusOK, dto.UpdateInstanceResponse{
+		Instance: updated,
 	})
 }
 
