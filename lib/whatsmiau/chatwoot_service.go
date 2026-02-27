@@ -868,7 +868,7 @@ func extractMessageText(data *WookMessageData) string {
 		}
 	}
 	if msg.ContactMessage != nil {
-    	fmt.Printf("ContactMessage: %+v\n", msg.ContactMessage)
+    	return fmt.Sprintf("ContactMessage: %+v\n", msg.ContactMessage)
 	}
 	if msg.ReactionMessage != nil {
 		return fmt.Sprintf("[Reação: %s]", msg.ReactionMessage.Text)
