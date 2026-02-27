@@ -34,56 +34,28 @@ func (s *Whatsmiau) SendText(ctx context.Context, data *SendText) (*SendTextResp
 		return nil, whatsmeow.ErrClientIsNil
 	}
 
-	// Criar a mensagem base
 	var message *waE2E.Message
 
-	// Verificar se tem quoted message
-	if len(data.QuoteMessageID) > 0 {
-		// Mensagem COM citação (quoted)
-		extendedMessage := &waE2E.ExtendedTextMessage{
-			Text: proto.String(data.Text),
-		}
+	// 🎯 USAR O HELPER
+	contextInfo := BuildContextInfoWithQuoted(QuotedMessageParams{
+		QuoteMessageID: data.QuoteMessageID,
+		QuoteMessage:   data.QuoteMessage,
+		RemoteJID:      data.RemoteJID,
+	})
 
-		// Preparar a mensagem quotada
-		var quotedMessage *waE2E.Message
-		if len(data.QuoteMessage) > 0 {
-			// Se temos o texto da mensagem original, criar ExtendedTextMessage
-			quotedMessage = &waE2E.Message{
-				ExtendedTextMessage: &waE2E.ExtendedTextMessage{
-					Text: proto.String(data.QuoteMessage),
-				},
-			}
-		} else {
-			// Se não temos o texto, usar Conversation vazia
-			quotedMessage = &waE2E.Message{
-				Conversation: proto.String(""),
-			}
-		}
-
-		// Montar o ContextInfo com a mensagem citada
-		extendedMessage.ContextInfo = &waE2E.ContextInfo{
-			StanzaID:      proto.String(data.QuoteMessageID),
-			QuotedMessage: quotedMessage,
-		}
-
-		// Se for em grupo, adicionar o Participant
-		if data.RemoteJID.Server == "g.us" {
-			// Para grupos, o participant é necessário
-			participantJID := data.RemoteJID.ToNonAD().String()
-			extendedMessage.ContextInfo.Participant = proto.String(participantJID)
-		}
-
+	if contextInfo != nil {
 		message = &waE2E.Message{
-			ExtendedTextMessage: extendedMessage,
+			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+				Text:        proto.String(data.Text),
+				ContextInfo: contextInfo,
+			},
 		}
 	} else {
-		// Mensagem SEM citação (comportamento normal)
 		message = &waE2E.Message{
 			Conversation: proto.String(data.Text),
 		}
 	}
 
-	// Enviar a mensagem
 	res, err := client.SendMessage(ctx, *data.RemoteJID, message)
 	if err != nil {
 		return nil, err
