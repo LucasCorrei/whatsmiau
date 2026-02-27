@@ -898,7 +898,13 @@ func extractMessageText(data *WookMessageData) string {
 		lng,
 		link,
 	)
-}
+	}
+	if msg.StickerMessage != nil {
+		if msg.StickerMessage.IsAnimated {
+			return "🖼️ *Sticker animado*"
+		}
+		return "🖼️ *Sticker*"
+	}
 	if msg.ReactionMessage != nil {
 		return fmt.Sprintf("[Reação: %s]", msg.ReactionMessage.Text)
 	}
