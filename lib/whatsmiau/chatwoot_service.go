@@ -891,7 +891,7 @@ func extractMessageText(data *WookMessageData) string {
 	link := fmt.Sprintf("https://www.google.com/maps?q=%f,%f", lat, lng)
 
 	return fmt.Sprintf(
-		"Localização:\nNome: %s\nEndereço: %s\nLatitude: %f\nLongitude: %f\nMapa: %s",
+		"📍 *Localização*\n\n*Nome:* %s\n*Endereço:* %s\n*Latitude:* %.6f\n*Longitude:* %.6f\n\n🌎 *Mapa:* %s",
 		nome,
 		endereco,
 		lat,
