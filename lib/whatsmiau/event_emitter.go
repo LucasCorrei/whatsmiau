@@ -509,6 +509,18 @@ func (s *Whatsmiau) parseWAMessage(m *waE2E.Message) (string, *WookMessageRaw, *
 			Contacts:    contacts,
 		}
 		ci = contactArray.GetContextInfo()
+	} else if loc := m.GetLocationMessage(); loc != nil {
+	messageType = "locationMessage"
+
+	raw.LocationMessage = &WookLocationMessageRaw{
+		DegreesLatitude:  loc.GetDegreesLatitude(),
+		DegreesLongitude: loc.GetDegreesLongitude(),
+		Name:             loc.GetName(),
+		Address:          loc.GetAddress(),
+		Url:              loc.GetUrl(),
+	}
+
+	ci = loc.GetContextInfo()
 	} else if conv := strings.TrimSpace(m.GetConversation()); conv != "" {
 		messageType = "conversation"
 		raw.Conversation = conv
