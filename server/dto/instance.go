@@ -3,9 +3,44 @@ package dto
 import "github.com/verbeux-ai/whatsmiau/models"
 
 type CreateInstanceRequest struct {
-	ID               string `json:"id,omitempty" validate:"required_without=InstanceName"`
-	InstanceName     string `json:"instanceName,omitempty" validate:"required_without=InstanceID"`
-	*models.Instance        // optional arguments
+	InstanceName string `json:"instanceName" validate:"required"`
+
+	Integration string `json:"integration,omitempty"`
+	Token       string `json:"token,omitempty"`
+	QRCode      bool   `json:"qrcode,omitempty"`
+	Number      string `json:"number,omitempty"`
+
+	RejectCall      bool   `json:"rejectCall,omitempty"`
+	MsgCall         string `json:"msgCall,omitempty"`
+	GroupsIgnore    bool   `json:"groupsIgnore,omitempty"`
+	AlwaysOnline    bool   `json:"alwaysOnline,omitempty"`
+	ReadMessages    bool   `json:"readMessages,omitempty"`
+	ReadStatus      bool   `json:"readStatus,omitempty"`
+	SyncFullHistory bool   `json:"syncFullHistory,omitempty"`
+
+	Webhook models.InstanceWebhook `json:"webhook,omitempty"`
+
+	// ===== Chatwoot =====
+	ChatwootAccountID               int    `json:"chatwootAccountId,omitempty"`
+	ChatwootToken                   string `json:"chatwootToken,omitempty"`
+	ChatwootURL                     string `json:"chatwootUrl,omitempty"`
+	ChatwootSignMsg                 bool   `json:"chatwootSignMsg,omitempty"`
+	ChatwootReopenConversation      bool   `json:"chatwootReopenConversation,omitempty"`
+	ChatwootConversationPending     bool   `json:"chatwootConversationPending,omitempty"`
+	ChatwootImportContacts          bool   `json:"chatwootImportContacts,omitempty"`
+	ChatwootNameInbox               string `json:"chatwootNameInbox,omitempty"`
+	ChatwootMergeBrazilContacts     bool   `json:"chatwootMergeBrazilContacts,omitempty"`
+	ChatwootImportMessages          bool   `json:"chatwootImportMessages,omitempty"`
+	ChatwootDaysLimitImportMessages int    `json:"chatwootDaysLimitImportMessages,omitempty"`
+	ChatwootOrganization            string `json:"chatwootOrganization,omitempty"`
+	ChatwootLogo                    string `json:"chatwootLogo,omitempty"`
+
+	// ===== Proxy =====
+	ProxyHost     string `json:"proxyHost,omitempty"`
+	ProxyPort     string `json:"proxyPort,omitempty"`
+	ProxyProtocol string `json:"proxyProtocol,omitempty"`
+	ProxyUsername string `json:"proxyUsername,omitempty"`
+	ProxyPassword string `json:"proxyPassword,omitempty"`
 }
 
 type CreateInstanceResponse struct {
