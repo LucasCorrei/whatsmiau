@@ -95,20 +95,6 @@ func (s *Whatsmiau) SendText(ctx context.Context, data *SendText) (*SendTextResp
 	}, nil
 }
 
-	res, err := client.SendMessage(ctx, *data.RemoteJID, &waE2E.Message{
-		Conversation:        &data.Text,
-		ExtendedTextMessage: extendedMessage,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &SendTextResponse{
-	ID:        res.ID,
-	CreatedAt: res.Timestamp,
-	}, nil
-}
-
 type SendAudioRequest struct {
 	AudioURL       string     `json:"text"`
 	InstanceID     string     `json:"instance_id"`
