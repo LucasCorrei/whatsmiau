@@ -18,7 +18,7 @@ type CreateInstanceRequest struct {
 	ReadStatus      bool   `json:"readStatus,omitempty"`
 	SyncFullHistory bool   `json:"syncFullHistory,omitempty"`
 
-	Webhook models.InstanceWebhook `json:"webhook,omitempty"`
+	Webhook *models.InstanceWebhook `json:"webhook,omitempty"`
 
 	// ===== Chatwoot =====
 	ChatwootAccountID               int    `json:"chatwootAccountId,omitempty"`
@@ -48,12 +48,31 @@ type CreateInstanceResponse struct {
 }
 
 type UpdateInstanceRequest struct {
-	ID      string `json:"id,omitempty" param:"id" validate:"required"`
-	Webhook struct {
-		Base64 bool     `json:"base64,omitempty"`
-		URL    string   `json:"url,omitempty"`
-		Events []string `json:"events,omitempty"`
-	} `json:"webhook,omitempty"`
+	ID string `param:"id" validate:"required"`
+
+	Webhook *models.InstanceWebhook `json:"webhook,omitempty"`
+
+	// ===== Chatwoot =====
+	ChatwootAccountID               *int    `json:"chatwootAccountId,omitempty"`
+	ChatwootToken                   *string `json:"chatwootToken,omitempty"`
+	ChatwootURL                     *string `json:"chatwootUrl,omitempty"`
+	ChatwootSignMsg                 *bool   `json:"chatwootSignMsg,omitempty"`
+	ChatwootReopenConversation      *bool   `json:"chatwootReopenConversation,omitempty"`
+	ChatwootConversationPending     *bool   `json:"chatwootConversationPending,omitempty"`
+	ChatwootImportContacts          *bool   `json:"chatwootImportContacts,omitempty"`
+	ChatwootNameInbox               *string `json:"chatwootNameInbox,omitempty"`
+	ChatwootMergeBrazilContacts     *bool   `json:"chatwootMergeBrazilContacts,omitempty"`
+	ChatwootImportMessages          *bool   `json:"chatwootImportMessages,omitempty"`
+	ChatwootDaysLimitImportMessages *int    `json:"chatwootDaysLimitImportMessages,omitempty"`
+	ChatwootOrganization            *string `json:"chatwootOrganization,omitempty"`
+	ChatwootLogo                    *string `json:"chatwootLogo,omitempty"`
+
+	// ===== Proxy =====
+	ProxyHost     *string `json:"proxyHost,omitempty"`
+	ProxyPort     *string `json:"proxyPort,omitempty"`
+	ProxyProtocol *string `json:"proxyProtocol,omitempty"`
+	ProxyUsername *string `json:"proxyUsername,omitempty"`
+	ProxyPassword *string `json:"proxyPassword,omitempty"`
 }
 
 type UpdateInstanceResponse struct {
