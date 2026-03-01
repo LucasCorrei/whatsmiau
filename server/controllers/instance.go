@@ -55,66 +55,171 @@ func (s *Instance) Create(ctx echo.Context) error {
 }
 
 func (s *Instance) Update(ctx echo.Context) error {
+	// ================================
+	// 1️⃣ Bind do request
+	// ================================
 	var request dto.UpdateInstanceRequest
 
 	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
+		return utils.HTTPFail(
+			ctx,
+			http.StatusUnprocessableEntity,
+			err,
+			"failed to bind request body",
+		)
 	}
 
+	// ================================
+	// 2️⃣ Validação do DTO
+	// ================================
 	if err := validator.New().Struct(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
+		return utils.HTTPFail(
+			ctx,
+			http.StatusBadRequest,
+			err,
+			"invalid request body",
+		)
 	}
 
 	c := ctx.Request().Context()
 
-	// 1️⃣ Buscar instância atual
+	// ================================
+	// 3️⃣ Buscar instância atual
+	// ================================
 	currentList, err := s.repo.List(c, request.ID)
 	if err != nil {
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to list instances")
+		return utils.HTTPFail(
+			ctx,
+			http.StatusInternalServerError,
+			err,
+			"failed to list instances",
+		)
 	}
 
 	if len(currentList) == 0 {
-		return utils.HTTPFail(ctx, http.StatusNotFound, err, "instance not found")
+		return utils.HTTPFail(
+			ctx,
+			http.StatusNotFound,
+			nil,
+			"instance not found",
+		)
 	}
 
 	current := currentList[0]
 
-	// 2️⃣ Atualizar somente o que veio no request
+	// ================================
+	// 4️⃣ Atualizações parciais (PATCH)
+	// ================================
 
-	if request.Webhook.URL != "" {
-		current.Webhook.Url = request.Webhook.URL
+	// ---------- Webhook ----------
+	if request.Webhook != nil {
+
+		// Garante que não vai dar nil panic
+		if current.Webhook == nil {
+			current.Webhook = &models.Webhook{}
+		}
+
+		if request.Webhook.Url != "" {
+			current.Webhook.Url = request.Webhook.Url
+		}
+
+		if request.Webhook.Base64 != nil {
+			current.Webhook.Base64 = request.Webhook.Base64
+		}
+
+		if request.Webhook.Events != nil {
+			current.Webhook.Events = request.Webhook.Events
+		}
+
+		if request.Webhook.Headers != nil {
+			current.Webhook.Headers = request.Webhook.Headers
+		}
+
+		// Bool normalmente não precisa validar nil
+		current.Webhook.ByEvents = request.Webhook.ByEvents
 	}
 
-	current.Webhook.Base64 = &request.Webhook.Base64
-	current.Webhook.Events = request.Webhook.Events
-
-	// Se você adicionar chatwoot no update:
-	if request.ChatwootURL != "" {
-		current.ChatwootURL = request.ChatwootURL
-		current.ChatwootToken = request.ChatwootToken
-		current.ChatwootAccountID = request.ChatwootAccountID
+	// ---------- Chatwoot ----------
+	if request.ChatwootURL != nil {
+		current.ChatwootURL = *request.ChatwootURL
+	}
+	if request.ChatwootToken != nil {
+		current.ChatwootToken = *request.ChatwootToken
+	}
+	if request.ChatwootAccountID != nil {
+		current.ChatwootAccountID = *request.ChatwootAccountID
+	}
+	if request.ChatwootSignMsg != nil {
+		current.ChatwootSignMsg = *request.ChatwootSignMsg
+	}
+	if request.ChatwootReopenConversation != nil {
+		current.ChatwootReopenConversation = *request.ChatwootReopenConversation
+	}
+	if request.ChatwootConversationPending != nil {
+		current.ChatwootConversationPending = *request.ChatwootConversationPending
+	}
+	if request.ChatwootImportContacts != nil {
+		current.ChatwootImportContacts = *request.ChatwootImportContacts
+	}
+	if request.ChatwootNameInbox != nil {
+		current.ChatwootNameInbox = *request.ChatwootNameInbox
+	}
+	if request.ChatwootMergeBrazilContacts != nil {
+		current.ChatwootMergeBrazilContacts = *request.ChatwootMergeBrazilContacts
+	}
+	if request.ChatwootImportMessages != nil {
+		current.ChatwootImportMessages = *request.ChatwootImportMessages
+	}
+	if request.ChatwootDaysLimitImportMessages != nil {
+		current.ChatwootDaysLimitImportMessages = *request.ChatwootDaysLimitImportMessages
+	}
+	if request.ChatwootOrganization != nil {
+		current.ChatwootOrganization = *request.ChatwootOrganization
+	}
+	if request.ChatwootLogo != nil {
+		current.ChatwootLogo = *request.ChatwootLogo
 	}
 
-	// Proxy opcional
-	if request.ProxyHost != "" {
-		current.ProxyHost = request.ProxyHost
-		current.ProxyPort = request.ProxyPort
-		current.ProxyProtocol = request.ProxyProtocol
-		current.ProxyUsername = request.ProxyUsername
-		current.ProxyPassword = request.ProxyPassword
+	// ---------- Proxy ----------
+	if request.ProxyHost != nil {
+		current.ProxyHost = *request.ProxyHost
+	}
+	if request.ProxyPort != nil {
+		current.ProxyPort = *request.ProxyPort
+	}
+	if request.ProxyProtocol != nil {
+		current.ProxyProtocol = *request.ProxyProtocol
+	}
+	if request.ProxyUsername != nil {
+		current.ProxyUsername = *request.ProxyUsername
+	}
+	if request.ProxyPassword != nil {
+		current.ProxyPassword = *request.ProxyPassword
 	}
 
-	// 3️⃣ Salvar
+	// ================================
+	// 5️⃣ Persistir no banco
+	// ================================
 	updated, err := s.repo.Update(c, request.ID, &current)
 	if err != nil {
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to update instance")
+		return utils.HTTPFail(
+			ctx,
+			http.StatusInternalServerError,
+			err,
+			"failed to update instance",
+		)
 	}
 
-	return ctx.JSON(http.StatusOK, dto.UpdateInstanceResponse{
-		Instance: updated,
-	})
+	// ================================
+	// 6️⃣ Resposta
+	// ================================
+	return ctx.JSON(
+		http.StatusOK,
+		dto.UpdateInstanceResponse{
+			Instance: updated,
+		},
+	)
 }
-
 func (s *Instance) List(ctx echo.Context) error {
 	c := ctx.Request().Context()
 	var request dto.ListInstancesRequest
