@@ -34,53 +34,24 @@ func NewInstances(repository interfaces.InstanceRepository, whatsmiau *whatsmiau
 }
 
 func (s *Instance) Create(ctx echo.Context) error {
-	var request dto.CreateInstanceRequest
+	var instance models.Instance
 
-	if err := ctx.Bind(&request); err != nil {
+	if err := ctx.Bind(&instance); err != nil {
 		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
 	}
 
-	if err := validator.New().Struct(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
-	}
-
-	// 🔹 Garante ID baseado no nome
-	request.ID = request.InstanceName
-
-	if request.Instance == nil {
-		request.Instance = &models.Instance{}
-	}
-
-	request.Instance.ID = request.InstanceName
-	request.Instance.RemoteJID = ""
-
-	// 🔹 Proxy automático via ENV (se não enviado)
-	if request.Instance.ProxyHost == "" && len(env.Env.ProxyAddresses) > 0 {
-		rd := rand.IntN(len(env.Env.ProxyAddresses))
-		proxyUrl := env.Env.ProxyAddresses[rd]
-
-		proxy, err := parseProxyURL(proxyUrl)
-		if err != nil {
-			return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "invalid proxy url on env")
-		}
-
-		request.Instance.ProxyHost = proxy.ProxyHost
-		request.Instance.ProxyPort = proxy.ProxyPort
-		request.Instance.ProxyProtocol = proxy.ProxyProtocol
-		request.Instance.ProxyUsername = proxy.ProxyUsername
-		request.Instance.ProxyPassword = proxy.ProxyPassword
+	if instance.ID == "" {
+		return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "instance id is required")
 	}
 
 	c := ctx.Request().Context()
 
-	if err := s.repo.Create(c, request.Instance); err != nil {
+	if err := s.repo.Create(c, &instance); err != nil {
 		zap.L().Error("failed to create instance", zap.Error(err))
 		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to create instance")
 	}
 
-	return ctx.JSON(http.StatusCreated, dto.CreateInstanceResponse{
-		Instance: request.Instance,
-	})
+	return ctx.JSON(http.StatusCreated, instance)
 }
 
 func (s *Instance) Update(ctx echo.Context) error {
