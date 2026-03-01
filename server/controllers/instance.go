@@ -6,7 +6,6 @@ import (
 
 	"github.com/verbeux-ai/whatsmiau/lib/whatsmiau"
 	"github.com/verbeux-ai/whatsmiau/models"
-	"go.mau.fi/whatsmeow/types"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/labstack/echo/v4"
@@ -14,6 +13,7 @@ import (
 	"github.com/verbeux-ai/whatsmiau/interfaces"
 	"github.com/verbeux-ai/whatsmiau/server/dto"
 	"github.com/verbeux-ai/whatsmiau/utils"
+	"go.mau.fi/whatsmeow/types"
 	"go.uber.org/zap"
 )
 
@@ -30,24 +30,83 @@ func NewInstances(repository interfaces.InstanceRepository, whatsmiau *whatsmiau
 }
 
 func (s *Instance) Create(ctx echo.Context) error {
-	var instance models.Instance
+	// ================================
+	// 1️⃣ Bind do request DTO
+	// ================================
+	var request dto.CreateInstanceRequest
 
-	if err := ctx.Bind(&instance); err != nil {
+	if err := ctx.Bind(&request); err != nil {
 		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
 	}
 
-	if instance.ID == "" {
-		return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "instance id is required")
+	// ================================
+	// 2️⃣ Validação do DTO
+	// ================================
+	if err := validator.New().Struct(&request); err != nil {
+		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
+	}
+
+	// ================================
+	// 3️⃣ Mapear DTO → Model
+	// ================================
+	instance := models.Instance{
+		ID:          request.InstanceName, // instanceName → ID
+		Integration: request.Integration,
+		Token:       request.Token,
+		QRCode:      request.QRCode,
+		Number:      request.Number,
+
+		RejectCall:      request.RejectCall,
+		MsgCall:         request.MsgCall,
+		GroupsIgnore:    request.GroupsIgnore,
+		AlwaysOnline:    request.AlwaysOnline,
+		ReadMessages:    request.ReadMessages,
+		ReadStatus:      request.ReadStatus,
+		SyncFullHistory: request.SyncFullHistory,
+
+		Webhook: request.Webhook,
+
+		// Chatwoot
+		ChatwootAccountID:               request.ChatwootAccountID,
+		ChatwootToken:                   request.ChatwootToken,
+		ChatwootURL:                     request.ChatwootURL,
+		ChatwootSignMsg:                 request.ChatwootSignMsg,
+		ChatwootReopenConversation:      request.ChatwootReopenConversation,
+		ChatwootConversationPending:     request.ChatwootConversationPending,
+		ChatwootImportContacts:          request.ChatwootImportContacts,
+		ChatwootNameInbox:               request.ChatwootNameInbox,
+		ChatwootMergeBrazilContacts:     request.ChatwootMergeBrazilContacts,
+		ChatwootImportMessages:          request.ChatwootImportMessages,
+		ChatwootDaysLimitImportMessages: request.ChatwootDaysLimitImportMessages,
+		ChatwootOrganization:            request.ChatwootOrganization,
+		ChatwootLogo:                    request.ChatwootLogo,
+
+		// Proxy
+		InstanceProxy: models.InstanceProxy{
+			ProxyHost:     request.ProxyHost,
+			ProxyPort:     request.ProxyPort,
+			ProxyProtocol: request.ProxyProtocol,
+			ProxyUsername: request.ProxyUsername,
+			ProxyPassword: request.ProxyPassword,
+		},
 	}
 
 	c := ctx.Request().Context()
 
+	// ================================
+	// 4️⃣ Criar no banco
+	// ================================
 	if err := s.repo.Create(c, &instance); err != nil {
 		zap.L().Error("failed to create instance", zap.Error(err))
 		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to create instance")
 	}
 
-	return ctx.JSON(http.StatusCreated, instance)
+	// ================================
+	// 5️⃣ Resposta
+	// ================================
+	return ctx.JSON(http.StatusCreated, dto.CreateInstanceResponse{
+		Instance: instance,
+	})
 }
 
 func (s *Instance) Update(ctx echo.Context) error {
@@ -109,7 +168,6 @@ func (s *Instance) Update(ctx echo.Context) error {
 
 	// ---------- Webhook ----------
 	if request.Webhook != nil {
-
 		// Garante que não vai dar nil panic
 		if current.Webhook == nil {
 			current.Webhook = &models.InstanceWebhook{}
@@ -122,9 +180,7 @@ func (s *Instance) Update(ctx echo.Context) error {
 		if request.Webhook.Base64 != nil {
 			current.Webhook.Base64 = request.Webhook.Base64
 		}
-	    if request.Webhook.ByEvents != nil {
-      		current.Webhook.ByEvents = request.Webhook.ByEvents
-  		}
+
 		if request.Webhook.Events != nil {
 			current.Webhook.Events = request.Webhook.Events
 		}
@@ -133,8 +189,9 @@ func (s *Instance) Update(ctx echo.Context) error {
 			current.Webhook.Headers = request.Webhook.Headers
 		}
 
-		// Bool normalmente não precisa validar nil
-		current.Webhook.ByEvents = request.Webhook.ByEvents
+		if request.Webhook.ByEvents != nil {
+			current.Webhook.ByEvents = request.Webhook.ByEvents
+		}
 	}
 
 	// ---------- Chatwoot ----------
@@ -218,6 +275,7 @@ func (s *Instance) Update(ctx echo.Context) error {
 		},
 	)
 }
+
 func (s *Instance) List(ctx echo.Context) error {
 	c := ctx.Request().Context()
 	var request dto.ListInstancesRequest
