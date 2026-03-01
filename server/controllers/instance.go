@@ -2,14 +2,10 @@ package controllers
 
 import (
 	"encoding/base64"
-	"errors"
-	"math/rand/v2"
 	"net/http"
 
-	"github.com/verbeux-ai/whatsmiau/env"
 	"github.com/verbeux-ai/whatsmiau/lib/whatsmiau"
 	"github.com/verbeux-ai/whatsmiau/models"
-	"github.com/verbeux-ai/whatsmiau/repositories/instances"
 	"go.mau.fi/whatsmeow/types"
 
 	"github.com/go-playground/validator/v10"
@@ -116,7 +112,7 @@ func (s *Instance) Update(ctx echo.Context) error {
 
 		// Garante que não vai dar nil panic
 		if current.Webhook == nil {
-			current.Webhook = &models.Webhook{}
+			current.Webhook = &models.InstanceWebhook{}
 		}
 
 		if request.Webhook.Url != "" {
@@ -126,7 +122,9 @@ func (s *Instance) Update(ctx echo.Context) error {
 		if request.Webhook.Base64 != nil {
 			current.Webhook.Base64 = request.Webhook.Base64
 		}
-
+	    if request.Webhook.ByEvents != nil {
+      		current.Webhook.ByEvents = request.Webhook.ByEvents
+  		}
 		if request.Webhook.Events != nil {
 			current.Webhook.Events = request.Webhook.Events
 		}
