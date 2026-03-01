@@ -44,7 +44,7 @@ type CreateInstanceRequest struct {
 }
 
 type CreateInstanceResponse struct {
-	*models.Instance
+	models.Instance
 }
 
 type UpdateInstanceRequest struct {
