@@ -160,7 +160,18 @@ func (s *Instance) Update(ctx echo.Context) error {
 		)
 	}
 
-	current := currentList[0]
+	// Usar ponteiro para garantir que modificações sejam persistidas
+	current := &currentList[0]
+
+	zap.L().Info("instance before update",
+		zap.String("id", current.ID),
+		zap.String("webhook_url", func() string {
+			if current.Webhook != nil {
+				return current.Webhook.Url
+			}
+			return "nil"
+		}()),
+	)
 
 	// ================================
 	// 4️⃣ Atualizações parciais (PATCH)
@@ -255,7 +266,17 @@ func (s *Instance) Update(ctx echo.Context) error {
 	// ================================
 	// 5️⃣ Persistir no banco
 	// ================================
-	updated, err := s.repo.Update(c, request.ID, &current)
+	zap.L().Info("instance after modifications",
+		zap.String("id", current.ID),
+		zap.String("webhook_url", func() string {
+			if current.Webhook != nil {
+				return current.Webhook.Url
+			}
+			return "nil"
+		}()),
+	)
+
+	updated, err := s.repo.Update(c, request.ID, current)
 	if err != nil {
 		return utils.HTTPFail(
 			ctx,
