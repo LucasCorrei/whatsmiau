@@ -17,6 +17,31 @@ import (
 	"go.uber.org/zap"
 )
 
+// ================================
+// Helper functions para deref de ponteiros
+// ================================
+
+func derefInt(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+func derefBool(p *bool) bool {
+	if p == nil {
+		return false
+	}
+	return *p
+}
+
 type Instance struct {
 	repo      interfaces.InstanceRepository
 	whatsmiau *whatsmiau.Whatsmiau
@@ -50,7 +75,7 @@ func (s *Instance) Create(ctx echo.Context) error {
 	// 3️⃣ Mapear DTO → Model
 	// ================================
 	instance := models.Instance{
-		ID:          request.InstanceName, // instanceName → ID
+		ID:          request.InstanceName,
 		Integration: request.Integration,
 		Token:       request.Token,
 		QRCode:      request.QRCode,
@@ -66,20 +91,20 @@ func (s *Instance) Create(ctx echo.Context) error {
 
 		Webhook: request.Webhook,
 
-		// Chatwoot
-		ChatwootAccountID:               request.ChatwootAccountID,
-		ChatwootToken:                   request.ChatwootToken,
-		ChatwootURL:                     request.ChatwootURL,
-		ChatwootSignMsg:                 request.ChatwootSignMsg,
-		ChatwootReopenConversation:      request.ChatwootReopenConversation,
-		ChatwootConversationPending:     request.ChatwootConversationPending,
-		ChatwootImportContacts:          request.ChatwootImportContacts,
-		ChatwootNameInbox:               request.ChatwootNameInbox,
-		ChatwootMergeBrazilContacts:     request.ChatwootMergeBrazilContacts,
-		ChatwootImportMessages:          request.ChatwootImportMessages,
-		ChatwootDaysLimitImportMessages: request.ChatwootDaysLimitImportMessages,
-		ChatwootOrganization:            request.ChatwootOrganization,
-		ChatwootLogo:                    request.ChatwootLogo,
+		// Chatwoot — deref de ponteiros para value types
+		ChatwootAccountID:               derefInt(request.ChatwootAccountID),
+		ChatwootToken:                   derefString(request.ChatwootToken),
+		ChatwootURL:                     derefString(request.ChatwootURL),
+		ChatwootSignMsg:                 derefBool(request.ChatwootSignMsg),
+		ChatwootReopenConversation:      derefBool(request.ChatwootReopenConversation),
+		ChatwootConversationPending:     derefBool(request.ChatwootConversationPending),
+		ChatwootImportContacts:          derefBool(request.ChatwootImportContacts),
+		ChatwootNameInbox:               derefString(request.ChatwootNameInbox),
+		ChatwootMergeBrazilContacts:     derefBool(request.ChatwootMergeBrazilContacts),
+		ChatwootImportMessages:          derefBool(request.ChatwootImportMessages),
+		ChatwootDaysLimitImportMessages: derefInt(request.ChatwootDaysLimitImportMessages),
+		ChatwootOrganization:            derefString(request.ChatwootOrganization),
+		ChatwootLogo:                    derefString(request.ChatwootLogo),
 
 		// Proxy
 		InstanceProxy: models.InstanceProxy{
@@ -179,7 +204,6 @@ func (s *Instance) Update(ctx echo.Context) error {
 
 	// ---------- Webhook ----------
 	if request.Webhook != nil {
-		// Garante que não vai dar nil panic
 		if current.Webhook == nil {
 			current.Webhook = &models.InstanceWebhook{}
 		}
@@ -288,7 +312,6 @@ func (s *Instance) Update(ctx echo.Context) error {
 
 	// ================================
 	// 6️⃣ Buscar dados atualizados do banco
-	// (garante que retornamos o que está realmente salvo)
 	// ================================
 	updatedList, err := s.repo.List(c, request.ID)
 	if err != nil {
