@@ -21,19 +21,20 @@ type CreateInstanceRequest struct {
 	Webhook *models.InstanceWebhook `json:"webhook,omitempty"`
 
 	// ===== Chatwoot =====
-	ChatwootAccountID               int    `json:"chatwootAccountId,omitempty"`
-	ChatwootToken                   string `json:"chatwootToken,omitempty"`
-	ChatwootURL                     string `json:"chatwootUrl,omitempty"`
-	ChatwootSignMsg                 bool   `json:"chatwootSignMsg,omitempty"`
-	ChatwootReopenConversation      bool   `json:"chatwootReopenConversation,omitempty"`
-	ChatwootConversationPending     bool   `json:"chatwootConversationPending,omitempty"`
-	ChatwootImportContacts          bool   `json:"chatwootImportContacts,omitempty"`
-	ChatwootNameInbox               string `json:"chatwootNameInbox,omitempty"`
-	ChatwootMergeBrazilContacts     bool   `json:"chatwootMergeBrazilContacts,omitempty"`
-	ChatwootImportMessages          bool   `json:"chatwootImportMessages,omitempty"`
-	ChatwootDaysLimitImportMessages int    `json:"chatwootDaysLimitImportMessages,omitempty"`
-	ChatwootOrganization            string `json:"chatwootOrganization,omitempty"`
-	ChatwootLogo                    string `json:"chatwootLogo,omitempty"`
+// ===== Chatwoot =====
+	ChatwootAccountID               *int    `json:"chatwootAccountId,omitempty"`
+	ChatwootToken                   *string `json:"chatwootToken,omitempty"`
+	ChatwootURL                     *string `json:"chatwootUrl,omitempty"`
+	ChatwootSignMsg                 *bool   `json:"chatwootSignMsg,omitempty"`
+	ChatwootReopenConversation      *bool   `json:"chatwootReopenConversation,omitempty"`
+	ChatwootConversationPending     *bool   `json:"chatwootConversationPending,omitempty"`
+	ChatwootImportContacts          *bool   `json:"chatwootImportContacts,omitempty"`
+	ChatwootNameInbox               *string `json:"chatwootNameInbox,omitempty"`
+	ChatwootMergeBrazilContacts     *bool   `json:"chatwootMergeBrazilContacts,omitempty"`
+	ChatwootImportMessages          *bool   `json:"chatwootImportMessages,omitempty"`
+	ChatwootDaysLimitImportMessages *int    `json:"chatwootDaysLimitImportMessages,omitempty"`
+	ChatwootOrganization            *string `json:"chatwootOrganization,omitempty"`
+	ChatwootLogo                    *string `json:"chatwootLogo,omitempty"`
 
 	// ===== Proxy =====
 	ProxyHost     string `json:"proxyHost,omitempty"`
