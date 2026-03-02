@@ -1,528 +1,265 @@
 package controllers
 
 import (
-	"encoding/base64"
 	"net/http"
+	"regexp"
+	"strings"
 
-	"github.com/verbeux-ai/whatsmiau/lib/whatsmiau"
-	"github.com/verbeux-ai/whatsmiau/models"
-
-	"github.com/go-playground/validator/v10"
 	"github.com/labstack/echo/v4"
-	"github.com/skip2/go-qrcode"
 	"github.com/verbeux-ai/whatsmiau/interfaces"
-	"github.com/verbeux-ai/whatsmiau/server/dto"
-	"github.com/verbeux-ai/whatsmiau/utils"
+	"github.com/verbeux-ai/whatsmiau/lib/whatsmiau"
 	"go.mau.fi/whatsmeow/types"
-	"go.uber.org/zap"
 )
 
-type Instance struct {
+type Chatwoot struct {
 	repo      interfaces.InstanceRepository
 	whatsmiau *whatsmiau.Whatsmiau
 }
 
-func NewInstances(repository interfaces.InstanceRepository, whatsmiau *whatsmiau.Whatsmiau) *Instance {
-	return &Instance{
+func NewChatwoot(repository interfaces.InstanceRepository, whatsmiau *whatsmiau.Whatsmiau) *Chatwoot {
+	return &Chatwoot{
 		repo:      repository,
 		whatsmiau: whatsmiau,
 	}
 }
 
-func (s *Instance) Create(ctx echo.Context) error {
-	// ================================
-	// 1️⃣ Bind do request DTO
-	// ================================
-	var request dto.CreateInstanceRequest
+type ChatwootWebhook struct {
+	Event       string `json:"event"`
+	MessageType string `json:"message_type"`
+	Content     string `json:"content"`
+	Private     bool   `json:"private"`
+	SourceID    string `json:"source_id"`
 
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
-	}
+	ContentAttributes struct {
+		InReplyTo           int    `json:"in_reply_to"`
+		InReplyToExternalID string `json:"in_reply_to_external_id"`
+		ExternalError       any    `json:"external_error"`
+	} `json:"content_attributes"`
 
-	// ================================
-	// 2️⃣ Validação do DTO
-	// ================================
-	if err := validator.New().Struct(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
-	}
+	Attachments []struct {
+		FileType string `json:"file_type"`
+		DataURL  string `json:"data_url"`
+	} `json:"attachments"`
 
-	// ================================
-	// 3️⃣ Mapear DTO → Model
-	// ================================
-	instance := models.Instance{
-		ID:          request.InstanceName, // instanceName → ID
-		Integration: request.Integration,
-		Token:       request.Token,
-		QRCode:      request.QRCode,
-		Number:      request.Number,
-
-		RejectCall:      request.RejectCall,
-		MsgCall:         request.MsgCall,
-		GroupsIgnore:    request.GroupsIgnore,
-		AlwaysOnline:    request.AlwaysOnline,
-		ReadMessages:    request.ReadMessages,
-		ReadStatus:      request.ReadStatus,
-		SyncFullHistory: request.SyncFullHistory,
-
-		Webhook: request.Webhook,
-
-		// Chatwoot
-		ChatwootAccountID:               request.ChatwootAccountID,
-		ChatwootToken:                   request.ChatwootToken,
-		ChatwootURL:                     request.ChatwootURL,
-		ChatwootSignMsg:                 request.ChatwootSignMsg,
-		ChatwootReopenConversation:      request.ChatwootReopenConversation,
-		ChatwootConversationPending:     request.ChatwootConversationPending,
-		ChatwootImportContacts:          request.ChatwootImportContacts,
-		ChatwootNameInbox:               request.ChatwootNameInbox,
-		ChatwootMergeBrazilContacts:     request.ChatwootMergeBrazilContacts,
-		ChatwootImportMessages:          request.ChatwootImportMessages,
-		ChatwootDaysLimitImportMessages: request.ChatwootDaysLimitImportMessages,
-		ChatwootOrganization:            request.ChatwootOrganization,
-		ChatwootLogo:                    request.ChatwootLogo,
-
-		// Proxy
-		InstanceProxy: models.InstanceProxy{
-			ProxyHost:     request.ProxyHost,
-			ProxyPort:     request.ProxyPort,
-			ProxyProtocol: request.ProxyProtocol,
-			ProxyUsername: request.ProxyUsername,
-			ProxyPassword: request.ProxyPassword,
-		},
-	}
-
-	c := ctx.Request().Context()
-
-	// ================================
-	// 4️⃣ Criar no banco
-	// ================================
-	if err := s.repo.Create(c, &instance); err != nil {
-		zap.L().Error("failed to create instance", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to create instance")
-	}
-
-	// ================================
-	// 5️⃣ Resposta
-	// ================================
-	return ctx.JSON(http.StatusCreated, dto.CreateInstanceResponse{
-		Instance: instance,
-	})
+	Conversation struct {
+		Meta struct {
+			Sender struct {
+				Identifier string `json:"identifier"`
+			} `json:"sender"`
+		} `json:"meta"`
+	} `json:"conversation"`
 }
 
-func (s *Instance) Update(ctx echo.Context) error {
-	// ================================
-	// 1️⃣ Bind do request
-	// ================================
-	var request dto.UpdateInstanceRequest
+// =======================================================
+// UTIL: verifica se o texto é somente emoji
+// =======================================================
+func isOnlyEmoji(text string) bool {
+	if text == "" {
+		return false
+	}
+	emojiRegex := regexp.MustCompile(`^([\p{So}\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}\x{FE0F}\x{200D}]+)$`)
+	return emojiRegex.MatchString(strings.TrimSpace(text))
+}
 
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(
-			ctx,
-			http.StatusUnprocessableEntity,
-			err,
-			"failed to bind request body",
-		)
+// =======================================================
+// WEBHOOK
+// =======================================================
+func (c *Chatwoot) ReceiveWebhook(ctx echo.Context) error {
+
+	instanceName := ctx.Param("instance")
+	if instanceName == "" {
+		return ctx.JSON(http.StatusBadRequest, map[string]string{
+			"error": "instance required",
+		})
 	}
 
-	// ================================
-	// 2️⃣ Validação do DTO
-	// ================================
-	if err := validator.New().Struct(&request); err != nil {
-		return utils.HTTPFail(
-			ctx,
-			http.StatusBadRequest,
-			err,
-			"invalid request body",
-		)
+	var payload ChatwootWebhook
+	if err := ctx.Bind(&payload); err != nil {
+		return ctx.JSON(http.StatusBadRequest, map[string]string{
+			"error": "invalid payload",
+		})
 	}
 
-	c := ctx.Request().Context()
+	instances, err := c.repo.List(ctx.Request().Context(), instanceName)
+	if err != nil || len(instances) == 0 {
+		return ctx.JSON(http.StatusNotFound, map[string]string{
+			"error": "instance not found",
+		})
+	}
 
-	// ================================
-	// 3️⃣ Buscar instância atual
-	// ================================
-	currentList, err := s.repo.List(c, request.ID)
+	instanceID := instances[0].ID
+
+	jidString := payload.Conversation.Meta.Sender.Identifier
+	if jidString == "" {
+		return ctx.JSON(http.StatusBadRequest, map[string]string{
+			"error": "identifier not found",
+		})
+	}
+
+	jid, err := types.ParseJID(jidString)
 	if err != nil {
-		return utils.HTTPFail(
-			ctx,
-			http.StatusInternalServerError,
-			err,
-			"failed to list instances",
-		)
+		return ctx.JSON(http.StatusBadRequest, map[string]string{
+			"error": "invalid jid",
+		})
 	}
 
-	if len(currentList) == 0 {
-		return utils.HTTPFail(
-			ctx,
-			http.StatusNotFound,
-			nil,
-			"instance not found",
-		)
-	}
+	// =======================================================
+	// EVENT SWITCH
+	// =======================================================
+	switch payload.Event {
 
-	// Usar ponteiro para garantir que modificações sejam persistidas
-	current := &currentList[0]
+	// -------------------------------
+	// TYPING ON
+	// -------------------------------
+	case "conversation_typing_on":
+		_ = c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
+			InstanceID: instanceID,
+			RemoteJID:  &jid,
+			Presence:   types.ChatPresenceComposing,
+		})
+		return ctx.JSON(http.StatusOK, map[string]string{"status": "typing_on"})
 
-	zap.L().Info("instance before update",
-		zap.String("id", current.ID),
-		zap.String("webhook_url", func() string {
-			if current.Webhook != nil {
-				return current.Webhook.Url
+	// -------------------------------
+	// TYPING OFF
+	// -------------------------------
+	case "conversation_typing_off":
+		_ = c.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
+			InstanceID: instanceID,
+			RemoteJID:  &jid,
+			Presence:   types.ChatPresencePaused,
+		})
+		return ctx.JSON(http.StatusOK, map[string]string{"status": "typing_off"})
+
+	// -------------------------------
+	// MESSAGE CREATED
+	// -------------------------------
+	case "message_created":
+
+		if payload.MessageType != "outgoing" {
+			return ctx.JSON(http.StatusOK, map[string]string{"status": "ignored_not_outgoing"})
+		}
+
+		if payload.Private {
+			return ctx.JSON(http.StatusOK, map[string]string{"status": "ignored_private"})
+		}
+
+		if payload.SourceID != "" {
+			return ctx.JSON(http.StatusOK, map[string]string{"status": "ignored_already_has_source_id"})
+		}
+
+		// -----------------------------------------
+		// Verifica se é reply
+		// -----------------------------------------
+		var quotedMessageID string
+		if payload.ContentAttributes.InReplyToExternalID != "" {
+			quotedMessageID = strings.TrimPrefix(
+				payload.ContentAttributes.InReplyToExternalID,
+				"WAID:",
+			)
+		}
+
+		// -----------------------------------------
+		// TEXTO
+		// -----------------------------------------
+		if payload.Content != "" {
+
+			// Se for reply + emoji → reaction
+			if quotedMessageID != "" && isOnlyEmoji(payload.Content) {
+
+				_, err := c.whatsmiau.SendReaction(
+					ctx.Request().Context(),
+					&whatsmiau.SendReactionRequest{
+						InstanceID: instanceID,
+						Reaction:   payload.Content,
+						RemoteJID:  &jid,
+						MessageID:  quotedMessageID,
+						FromMe:     false,
+					},
+				)
+
+				if err != nil {
+					return ctx.JSON(http.StatusInternalServerError, map[string]string{
+						"error": "failed to send reaction",
+					})
+				}
+
+				return ctx.JSON(http.StatusOK, map[string]string{
+					"status": "reaction_sent",
+				})
 			}
-			return "nil"
-		}()),
-	)
 
-	// ================================
-	// 4️⃣ Atualizações parciais (PATCH)
-	// ================================
+			// Texto normal (com ou sem quoted)
+			_, err := c.whatsmiau.SendText(ctx.Request().Context(), &whatsmiau.SendText{
+				InstanceID:     instanceID,
+				RemoteJID:      &jid,
+				Text:           payload.Content,
+				QuoteMessageID: quotedMessageID,
+			})
 
-	// ---------- Webhook ----------
-	if request.Webhook != nil {
-		// Garante que não vai dar nil panic
-		if current.Webhook == nil {
-			current.Webhook = &models.InstanceWebhook{}
-		}
-
-		if request.Webhook.Url != "" {
-			current.Webhook.Url = request.Webhook.Url
-		}
-
-		if request.Webhook.Base64 != nil {
-			current.Webhook.Base64 = request.Webhook.Base64
-		}
-
-		if request.Webhook.Events != nil {
-			current.Webhook.Events = request.Webhook.Events
-		}
-
-		if request.Webhook.Headers != nil {
-			current.Webhook.Headers = request.Webhook.Headers
-		}
-
-		if request.Webhook.ByEvents != nil {
-			current.Webhook.ByEvents = request.Webhook.ByEvents
-		}
-	}
-
-	// ---------- Chatwoot ----------
-	if request.ChatwootURL != nil {
-		current.ChatwootURL = *request.ChatwootURL
-	}
-	if request.ChatwootToken != nil {
-		current.ChatwootToken = *request.ChatwootToken
-	}
-	if request.ChatwootAccountID != nil {
-		current.ChatwootAccountID = *request.ChatwootAccountID
-	}
-	if request.ChatwootSignMsg != nil {
-		current.ChatwootSignMsg = *request.ChatwootSignMsg
-	}
-	if request.ChatwootReopenConversation != nil {
-		current.ChatwootReopenConversation = *request.ChatwootReopenConversation
-	}
-	if request.ChatwootConversationPending != nil {
-		current.ChatwootConversationPending = *request.ChatwootConversationPending
-	}
-	if request.ChatwootImportContacts != nil {
-		current.ChatwootImportContacts = *request.ChatwootImportContacts
-	}
-	if request.ChatwootNameInbox != nil {
-		current.ChatwootNameInbox = *request.ChatwootNameInbox
-	}
-	if request.ChatwootMergeBrazilContacts != nil {
-		current.ChatwootMergeBrazilContacts = *request.ChatwootMergeBrazilContacts
-	}
-	if request.ChatwootImportMessages != nil {
-		current.ChatwootImportMessages = *request.ChatwootImportMessages
-	}
-	if request.ChatwootDaysLimitImportMessages != nil {
-		current.ChatwootDaysLimitImportMessages = *request.ChatwootDaysLimitImportMessages
-	}
-	if request.ChatwootOrganization != nil {
-		current.ChatwootOrganization = *request.ChatwootOrganization
-	}
-	if request.ChatwootLogo != nil {
-		current.ChatwootLogo = *request.ChatwootLogo
-	}
-
-	// ---------- Proxy ----------
-	if request.ProxyHost != nil {
-		current.ProxyHost = *request.ProxyHost
-	}
-	if request.ProxyPort != nil {
-		current.ProxyPort = *request.ProxyPort
-	}
-	if request.ProxyProtocol != nil {
-		current.ProxyProtocol = *request.ProxyProtocol
-	}
-	if request.ProxyUsername != nil {
-		current.ProxyUsername = *request.ProxyUsername
-	}
-	if request.ProxyPassword != nil {
-		current.ProxyPassword = *request.ProxyPassword
-	}
-
-	// ================================
-	// 5️⃣ Persistir no banco
-	// ================================
-	zap.L().Info("instance after modifications",
-		zap.String("id", current.ID),
-		zap.String("webhook_url", func() string {
-			if current.Webhook != nil {
-				return current.Webhook.Url
+			if err != nil {
+				return ctx.JSON(http.StatusInternalServerError, map[string]string{
+					"error": "failed to send text",
+				})
 			}
-			return "nil"
-		}()),
-	)
-
-	_, err = s.repo.Update(c, request.ID, current)
-	if err != nil {
-		return utils.HTTPFail(
-			ctx,
-			http.StatusInternalServerError,
-			err,
-			"failed to update instance",
-		)
-	}
-
-	// ================================
-	// 6️⃣ Buscar dados atualizados do banco
-	// (garante que retornamos o que está realmente salvo)
-	// ================================
-	updatedList, err := s.repo.List(c, request.ID)
-	if err != nil {
-		zap.L().Error("failed to fetch updated instance", zap.Error(err))
-		return utils.HTTPFail(
-			ctx,
-			http.StatusInternalServerError,
-			err,
-			"failed to fetch updated instance",
-		)
-	}
-
-	if len(updatedList) == 0 {
-		return utils.HTTPFail(
-			ctx,
-			http.StatusNotFound,
-			nil,
-			"instance not found after update",
-		)
-	}
-
-	// ================================
-	// 7️⃣ Resposta
-	// ================================
-	return ctx.JSON(
-		http.StatusOK,
-		dto.UpdateInstanceResponse{
-			Instance: &updatedList[0],
-		},
-	)
-}
-
-func (s *Instance) List(ctx echo.Context) error {
-	c := ctx.Request().Context()
-	var request dto.ListInstancesRequest
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
-	}
-	if request.InstanceName == "" {
-		request.InstanceName = request.ID
-	}
-
-	result, err := s.repo.List(c, request.InstanceName)
-	if err != nil {
-		zap.L().Error("failed to list instances", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to list instances")
-	}
-
-	var response []dto.ListInstancesResponse
-	for _, instance := range result {
-		jid, err := types.ParseJID(instance.RemoteJID)
-		if err != nil {
-			zap.L().Error("failed to parse jid", zap.Error(err))
 		}
 
-		response = append(response, dto.ListInstancesResponse{
-			Instance:     &instance,
-			OwnerJID:     jid.ToNonAD().String(),
-			InstanceName: instance.ID,
+		// -----------------------------------------
+		// ATTACHMENTS
+		// -----------------------------------------
+		for _, att := range payload.Attachments {
+
+			switch att.FileType {
+
+			case "audio":
+				_, err := c.whatsmiau.SendAudio(ctx.Request().Context(), &whatsmiau.SendAudioRequest{
+					InstanceID:     instanceID,
+					RemoteJID:      &jid,
+					AudioURL:       att.DataURL,
+					QuoteMessageID: quotedMessageID,
+				})
+				if err != nil {
+					return ctx.JSON(http.StatusInternalServerError, map[string]string{
+						"error": "failed to send audio",
+					})
+				}
+
+			case "image":
+				_, err := c.whatsmiau.SendImage(ctx.Request().Context(), &whatsmiau.SendImageRequest{
+					InstanceID:     instanceID,
+					RemoteJID:      &jid,
+					MediaURL:       att.DataURL,
+					Mimetype:       "image/jpeg",
+					QuoteMessageID: quotedMessageID,
+				})
+				if err != nil {
+					return ctx.JSON(http.StatusInternalServerError, map[string]string{
+						"error": "failed to send image",
+					})
+				}
+
+			case "file":
+				_, err := c.whatsmiau.SendDocument(ctx.Request().Context(), &whatsmiau.SendDocumentRequest{
+					InstanceID:     instanceID,
+					RemoteJID:      &jid,
+					MediaURL:       att.DataURL,
+					FileName:       "document",
+					Mimetype:       "application/octet-stream",
+					QuoteMessageID: quotedMessageID,
+				})
+				if err != nil {
+					return ctx.JSON(http.StatusInternalServerError, map[string]string{
+						"error": "failed to send document",
+					})
+				}
+			}
+		}
+
+		return ctx.JSON(http.StatusOK, map[string]string{
+			"status": "sent_to_whatsapp",
 		})
 	}
 
-	if len(response) == 0 {
-		return ctx.JSON(http.StatusOK, []string{})
-	}
-
-	return ctx.JSON(http.StatusOK, response)
-}
-
-func (s *Instance) Connect(ctx echo.Context) error {
-	c := ctx.Request().Context()
-	var request dto.ConnectInstanceRequest
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
-	}
-
-	result, err := s.repo.List(c, request.ID)
-	if err != nil {
-		zap.L().Error("failed to list instances", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to list instances")
-	}
-
-	if len(result) == 0 {
-		return utils.HTTPFail(ctx, http.StatusNotFound, err, "instance not found")
-	}
-
-	qrCode, err := s.whatsmiau.Connect(c, request.ID)
-	if err != nil {
-		zap.L().Error("failed to connect instance", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to connect instance")
-	}
-	if qrCode != "" {
-		png, err := qrcode.Encode(qrCode, qrcode.Medium, 512)
-		if err != nil {
-			zap.L().Error("failed to encode qrcode", zap.Error(err))
-			return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to encode qrcode")
-		}
-		return ctx.JSON(http.StatusOK, dto.ConnectInstanceResponse{
-			Message:   "If instance restart this instance could be lost if you cannot connect",
-			Connected: false,
-			Base64:    "data:image/png;base64," + base64.StdEncoding.EncodeToString(png),
-		})
-	}
-
-	return ctx.JSON(http.StatusOK, dto.ConnectInstanceResponse{
-		Message:   "instance already connected",
-		Connected: true,
-	})
-}
-
-func (s *Instance) ConnectQRBuffer(ctx echo.Context) error {
-	c := ctx.Request().Context()
-	var request dto.ConnectInstanceRequest
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
-	}
-
-	result, err := s.repo.List(c, request.ID)
-	if err != nil {
-		zap.L().Error("failed to list instances", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to list instances")
-	}
-
-	if len(result) == 0 {
-		return utils.HTTPFail(ctx, http.StatusNotFound, err, "instance not found")
-	}
-
-	qrCode, err := s.whatsmiau.Connect(c, request.ID)
-	if err != nil {
-		zap.L().Error("failed to connect instance", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to connect instance")
-	}
-	if qrCode != "" {
-		png, err := qrcode.Encode(qrCode, qrcode.Medium, 256)
-		if err != nil {
-			zap.L().Error("failed to encode qrcode", zap.Error(err))
-			return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to encode qrcode")
-		}
-		return ctx.Blob(http.StatusOK, "image/png", png)
-	}
-
-	return ctx.NoContent(http.StatusOK)
-}
-
-func (s *Instance) Status(ctx echo.Context) error {
-	c := ctx.Request().Context()
-	var request dto.ConnectInstanceRequest
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
-	}
-
-	result, err := s.repo.List(c, request.ID)
-	if err != nil {
-		zap.L().Error("failed to list instances", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to list instances")
-	}
-
-	if len(result) == 0 {
-		return utils.HTTPFail(ctx, http.StatusNotFound, err, "instance not found")
-	}
-
-	status, err := s.whatsmiau.Status(request.ID)
-	if err != nil {
-		zap.L().Error("failed to get status instance", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to get status instance")
-	}
-
-	return ctx.JSON(http.StatusOK, dto.StatusInstanceResponse{
-		ID:     request.ID,
-		Status: string(status),
-		Instance: &dto.StatusInstanceResponseEvolutionCompatibility{
-			InstanceName: request.ID,
-			State:        string(status),
-		},
-	})
-}
-
-func (s *Instance) Logout(ctx echo.Context) error {
-	c := ctx.Request().Context()
-	var request dto.DeleteInstanceRequest
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
-	}
-
-	result, err := s.repo.List(c, request.ID)
-	if err != nil {
-		zap.L().Error("failed to list instances", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to list instances")
-	}
-
-	if len(result) == 0 {
-		return utils.HTTPFail(ctx, http.StatusNotFound, err, "instance not found")
-	}
-
-	if err := s.whatsmiau.Logout(c, request.ID); err != nil {
-		zap.L().Error("failed to logout instance", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to logout instance")
-	}
-
-	return ctx.JSON(http.StatusOK, dto.DeleteInstanceResponse{
-		Message: "instance logout successfully",
-	})
-}
-
-func (s *Instance) Delete(ctx echo.Context) error {
-	c := ctx.Request().Context()
-	var request dto.DeleteInstanceRequest
-	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
-	}
-
-	result, err := s.repo.List(c, request.ID)
-	if err != nil {
-		zap.L().Error("failed to list instances", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to list instances")
-	}
-
-	if len(result) == 0 {
-		return ctx.JSON(http.StatusOK, dto.DeleteInstanceResponse{
-			Message: "instance doesn't exists",
-		})
-	}
-
-	if err := s.whatsmiau.Logout(ctx.Request().Context(), request.ID); err != nil {
-		zap.L().Error("failed to disconnect instance", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to logout instance")
-	}
-
-	if err := s.repo.Delete(c, request.ID); err != nil {
-		zap.L().Error("failed to delete instance", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to delete instance")
-	}
-
-	return ctx.JSON(http.StatusOK, dto.DeleteInstanceResponse{
-		Message: "instance deleted",
+	return ctx.JSON(http.StatusOK, map[string]string{
+		"status": "ignored_event",
 	})
 }
