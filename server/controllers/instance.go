@@ -276,7 +276,7 @@ func (s *Instance) Update(ctx echo.Context) error {
 		}()),
 	)
 
-	updated, err := s.repo.Update(c, request.ID, current)
+	_, err = s.repo.Update(c, request.ID, current)
 	if err != nil {
 		return utils.HTTPFail(
 			ctx,
@@ -287,12 +287,36 @@ func (s *Instance) Update(ctx echo.Context) error {
 	}
 
 	// ================================
-	// 6️⃣ Resposta
+	// 6️⃣ Buscar dados atualizados do banco
+	// (garante que retornamos o que está realmente salvo)
+	// ================================
+	updatedList, err := s.repo.List(c, request.ID)
+	if err != nil {
+		zap.L().Error("failed to fetch updated instance", zap.Error(err))
+		return utils.HTTPFail(
+			ctx,
+			http.StatusInternalServerError,
+			err,
+			"failed to fetch updated instance",
+		)
+	}
+
+	if len(updatedList) == 0 {
+		return utils.HTTPFail(
+			ctx,
+			http.StatusNotFound,
+			nil,
+			"instance not found after update",
+		)
+	}
+
+	// ================================
+	// 7️⃣ Resposta
 	// ================================
 	return ctx.JSON(
 		http.StatusOK,
 		dto.UpdateInstanceResponse{
-			Instance: updated,
+			Instance: &updatedList[0],
 		},
 	)
 }
