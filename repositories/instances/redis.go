@@ -67,28 +67,84 @@ func (s *RedisInstance) Update(ctx context.Context, id string, toUpdate *models.
 	}
 
 	oldInstance := result[0]
+
+	// ---------- RemoteJID ----------
 	if len(toUpdate.RemoteJID) > 0 {
 		oldInstance.RemoteJID = toUpdate.RemoteJID
 	}
-	if toUpdate.Webhook.Url != "" {
-		oldInstance.Webhook.Url = toUpdate.Webhook.Url
-	}
-	if toUpdate.Webhook.ByEvents != nil {
-		oldInstance.Webhook.ByEvents = toUpdate.Webhook.ByEvents
-	}
-	if toUpdate.Webhook.Base64 != nil {
-		oldInstance.Webhook.Base64 = toUpdate.Webhook.Base64
-	}
-	if toUpdate.Webhook.Headers != nil {
-		if oldInstance.Webhook.Headers == nil {
-			oldInstance.Webhook.Headers = map[string]string{}
+
+	// ---------- Webhook ----------
+	if toUpdate.Webhook != nil {
+		if oldInstance.Webhook == nil {
+			oldInstance.Webhook = &models.InstanceWebhook{}
 		}
-		for k, v := range toUpdate.Webhook.Headers {
-			oldInstance.Webhook.Headers[k] = v
+		if toUpdate.Webhook.Url != "" {
+			oldInstance.Webhook.Url = toUpdate.Webhook.Url
+		}
+		if toUpdate.Webhook.ByEvents != nil {
+			oldInstance.Webhook.ByEvents = toUpdate.Webhook.ByEvents
+		}
+		if toUpdate.Webhook.Base64 != nil {
+			oldInstance.Webhook.Base64 = toUpdate.Webhook.Base64
+		}
+		if toUpdate.Webhook.Headers != nil {
+			if oldInstance.Webhook.Headers == nil {
+				oldInstance.Webhook.Headers = map[string]string{}
+			}
+			for k, v := range toUpdate.Webhook.Headers {
+				oldInstance.Webhook.Headers[k] = v
+			}
+		}
+		if toUpdate.Webhook.Events != nil && len(toUpdate.Webhook.Events) > 0 {
+			oldInstance.Webhook.Events = toUpdate.Webhook.Events
 		}
 	}
-	if toUpdate.Webhook.Events != nil && len(toUpdate.Webhook.Events) > 0 {
-		oldInstance.Webhook.Events = toUpdate.Webhook.Events
+
+	// ---------- Chatwoot ----------
+	if toUpdate.ChatwootAccountID != 0 {
+		oldInstance.ChatwootAccountID = toUpdate.ChatwootAccountID
+	}
+	if toUpdate.ChatwootToken != "" {
+		oldInstance.ChatwootToken = toUpdate.ChatwootToken
+	}
+	if toUpdate.ChatwootURL != "" {
+		oldInstance.ChatwootURL = toUpdate.ChatwootURL
+	}
+	// bools: sempre sobrescreve (o controller já garante que só chega aqui se foi enviado)
+	oldInstance.ChatwootSignMsg = toUpdate.ChatwootSignMsg
+	oldInstance.ChatwootReopenConversation = toUpdate.ChatwootReopenConversation
+	oldInstance.ChatwootConversationPending = toUpdate.ChatwootConversationPending
+	oldInstance.ChatwootImportContacts = toUpdate.ChatwootImportContacts
+	oldInstance.ChatwootMergeBrazilContacts = toUpdate.ChatwootMergeBrazilContacts
+	oldInstance.ChatwootImportMessages = toUpdate.ChatwootImportMessages
+	if toUpdate.ChatwootNameInbox != "" {
+		oldInstance.ChatwootNameInbox = toUpdate.ChatwootNameInbox
+	}
+	if toUpdate.ChatwootDaysLimitImportMessages != 0 {
+		oldInstance.ChatwootDaysLimitImportMessages = toUpdate.ChatwootDaysLimitImportMessages
+	}
+	if toUpdate.ChatwootOrganization != "" {
+		oldInstance.ChatwootOrganization = toUpdate.ChatwootOrganization
+	}
+	if toUpdate.ChatwootLogo != "" {
+		oldInstance.ChatwootLogo = toUpdate.ChatwootLogo
+	}
+
+	// ---------- Proxy ----------
+	if toUpdate.ProxyHost != "" {
+		oldInstance.ProxyHost = toUpdate.ProxyHost
+	}
+	if toUpdate.ProxyPort != "" {
+		oldInstance.ProxyPort = toUpdate.ProxyPort
+	}
+	if toUpdate.ProxyProtocol != "" {
+		oldInstance.ProxyProtocol = toUpdate.ProxyProtocol
+	}
+	if toUpdate.ProxyUsername != "" {
+		oldInstance.ProxyUsername = toUpdate.ProxyUsername
+	}
+	if toUpdate.ProxyPassword != "" {
+		oldInstance.ProxyPassword = toUpdate.ProxyPassword
 	}
 
 	data, err := json.Marshal(oldInstance)
