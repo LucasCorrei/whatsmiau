@@ -17,31 +17,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// ================================
-// Helper functions para deref de ponteiros
-// ================================
-
-func derefInt(p *int) int {
-	if p == nil {
-		return 0
-	}
-	return *p
-}
-
-func derefString(p *string) string {
-	if p == nil {
-		return ""
-	}
-	return *p
-}
-
-func derefBool(p *bool) bool {
-	if p == nil {
-		return false
-	}
-	return *p
-}
-
 type Instance struct {
 	repo      interfaces.InstanceRepository
 	whatsmiau *whatsmiau.Whatsmiau
@@ -141,24 +116,14 @@ func (s *Instance) Update(ctx echo.Context) error {
 	var request dto.UpdateInstanceRequest
 
 	if err := ctx.Bind(&request); err != nil {
-		return utils.HTTPFail(
-			ctx,
-			http.StatusUnprocessableEntity,
-			err,
-			"failed to bind request body",
-		)
+		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
 	}
 
 	// ================================
 	// 2️⃣ Validação do DTO
 	// ================================
 	if err := validator.New().Struct(&request); err != nil {
-		return utils.HTTPFail(
-			ctx,
-			http.StatusBadRequest,
-			err,
-			"invalid request body",
-		)
+		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
 	}
 
 	c := ctx.Request().Context()
@@ -168,28 +133,18 @@ func (s *Instance) Update(ctx echo.Context) error {
 	// ================================
 	currentList, err := s.repo.List(c, request.ID)
 	if err != nil {
-		return utils.HTTPFail(
-			ctx,
-			http.StatusInternalServerError,
-			err,
-			"failed to list instances",
-		)
+		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to list instances")
 	}
 
 	if len(currentList) == 0 {
-		return utils.HTTPFail(
-			ctx,
-			http.StatusNotFound,
-			nil,
-			"instance not found",
-		)
+		return utils.HTTPFail(ctx, http.StatusNotFound, nil, "instance not found")
 	}
 
-	// Usar ponteiro para garantir que modificações sejam persistidas
 	current := &currentList[0]
 
 	zap.L().Info("instance before update",
 		zap.String("id", current.ID),
+		zap.String("chatwoot_url", current.ChatwootURL),
 		zap.String("webhook_url", func() string {
 			if current.Webhook != nil {
 				return current.Webhook.Url
@@ -207,37 +162,32 @@ func (s *Instance) Update(ctx echo.Context) error {
 		if current.Webhook == nil {
 			current.Webhook = &models.InstanceWebhook{}
 		}
-
 		if request.Webhook.Url != "" {
 			current.Webhook.Url = request.Webhook.Url
 		}
-
 		if request.Webhook.Base64 != nil {
 			current.Webhook.Base64 = request.Webhook.Base64
 		}
-
 		if request.Webhook.Events != nil {
 			current.Webhook.Events = request.Webhook.Events
 		}
-
 		if request.Webhook.Headers != nil {
 			current.Webhook.Headers = request.Webhook.Headers
 		}
-
 		if request.Webhook.ByEvents != nil {
 			current.Webhook.ByEvents = request.Webhook.ByEvents
 		}
 	}
 
 	// ---------- Chatwoot ----------
-	if request.ChatwootURL != nil {
-		current.ChatwootURL = *request.ChatwootURL
+	if request.ChatwootAccountID != nil {
+		current.ChatwootAccountID = *request.ChatwootAccountID
 	}
 	if request.ChatwootToken != nil {
 		current.ChatwootToken = *request.ChatwootToken
 	}
-	if request.ChatwootAccountID != nil {
-		current.ChatwootAccountID = *request.ChatwootAccountID
+	if request.ChatwootURL != nil {
+		current.ChatwootURL = *request.ChatwootURL
 	}
 	if request.ChatwootSignMsg != nil {
 		current.ChatwootSignMsg = *request.ChatwootSignMsg
@@ -292,6 +242,9 @@ func (s *Instance) Update(ctx echo.Context) error {
 	// ================================
 	zap.L().Info("instance after modifications",
 		zap.String("id", current.ID),
+		zap.String("chatwoot_url", current.ChatwootURL),
+		zap.String("chatwoot_token", current.ChatwootToken),
+		zap.Int("chatwoot_account_id", current.ChatwootAccountID),
 		zap.String("webhook_url", func() string {
 			if current.Webhook != nil {
 				return current.Webhook.Url
@@ -302,12 +255,7 @@ func (s *Instance) Update(ctx echo.Context) error {
 
 	_, err = s.repo.Update(c, request.ID, current)
 	if err != nil {
-		return utils.HTTPFail(
-			ctx,
-			http.StatusInternalServerError,
-			err,
-			"failed to update instance",
-		)
+		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to update instance")
 	}
 
 	// ================================
@@ -316,32 +264,19 @@ func (s *Instance) Update(ctx echo.Context) error {
 	updatedList, err := s.repo.List(c, request.ID)
 	if err != nil {
 		zap.L().Error("failed to fetch updated instance", zap.Error(err))
-		return utils.HTTPFail(
-			ctx,
-			http.StatusInternalServerError,
-			err,
-			"failed to fetch updated instance",
-		)
+		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to fetch updated instance")
 	}
 
 	if len(updatedList) == 0 {
-		return utils.HTTPFail(
-			ctx,
-			http.StatusNotFound,
-			nil,
-			"instance not found after update",
-		)
+		return utils.HTTPFail(ctx, http.StatusNotFound, nil, "instance not found after update")
 	}
 
 	// ================================
 	// 7️⃣ Resposta
 	// ================================
-	return ctx.JSON(
-		http.StatusOK,
-		dto.UpdateInstanceResponse{
-			Instance: &updatedList[0],
-		},
-	)
+	return ctx.JSON(http.StatusOK, dto.UpdateInstanceResponse{
+		Instance: &updatedList[0],
+	})
 }
 
 func (s *Instance) List(ctx echo.Context) error {
@@ -548,4 +483,29 @@ func (s *Instance) Delete(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, dto.DeleteInstanceResponse{
 		Message: "instance deleted",
 	})
+}
+
+// ================================
+// Helpers para deref de ponteiros
+// ================================
+
+func derefInt(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+func derefBool(p *bool) bool {
+	if p == nil {
+		return false
+	}
+	return *p
 }
