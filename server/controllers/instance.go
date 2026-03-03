@@ -30,25 +30,16 @@ func NewInstances(repository interfaces.InstanceRepository, whatsmiau *whatsmiau
 }
 
 func (s *Instance) Create(ctx echo.Context) error {
-	// ================================
-	// 1️⃣ Bind do request DTO
-	// ================================
 	var request dto.CreateInstanceRequest
 
 	if err := ctx.Bind(&request); err != nil {
 		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
 	}
 
-	// ================================
-	// 2️⃣ Validação do DTO
-	// ================================
 	if err := validator.New().Struct(&request); err != nil {
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
 	}
 
-	// ================================
-	// 3️⃣ Mapear DTO → Model
-	// ================================
 	instance := models.Instance{
 		ID:          request.InstanceName,
 		Integration: request.Integration,
@@ -66,7 +57,6 @@ func (s *Instance) Create(ctx echo.Context) error {
 
 		Webhook: request.Webhook,
 
-		// Chatwoot — deref de ponteiros para value types
 		ChatwootAccountID:               derefInt(request.ChatwootAccountID),
 		ChatwootToken:                   derefString(request.ChatwootToken),
 		ChatwootURL:                     derefString(request.ChatwootURL),
@@ -81,7 +71,6 @@ func (s *Instance) Create(ctx echo.Context) error {
 		ChatwootOrganization:            derefString(request.ChatwootOrganization),
 		ChatwootLogo:                    derefString(request.ChatwootLogo),
 
-		// Proxy
 		InstanceProxy: models.InstanceProxy{
 			ProxyHost:     request.ProxyHost,
 			ProxyPort:     request.ProxyPort,
@@ -93,17 +82,11 @@ func (s *Instance) Create(ctx echo.Context) error {
 
 	c := ctx.Request().Context()
 
-	// ================================
-	// 4️⃣ Criar no banco
-	// ================================
 	if err := s.repo.Create(c, &instance); err != nil {
 		zap.L().Error("failed to create instance", zap.Error(err))
 		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to create instance")
 	}
 
-	// ================================
-	// 5️⃣ Resposta
-	// ================================
 	return ctx.JSON(http.StatusCreated, dto.CreateInstanceResponse{
 		Instance: instance,
 	})
@@ -111,17 +94,25 @@ func (s *Instance) Create(ctx echo.Context) error {
 
 func (s *Instance) Update(ctx echo.Context) error {
 	// ================================
-	// 1️⃣ Bind do request
+	// 1️⃣ Bind em duas etapas para evitar bug do Echo
+	//    com param + json body no mesmo struct
 	// ================================
-	var request dto.UpdateInstanceRequest
 
+	// Primeiro: pega o :id da URL
+	id := ctx.Param("id")
+	if id == "" {
+		return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "missing instance id in url")
+	}
+
+	// Segundo: faz bind do body JSON separadamente
+	var request dto.UpdateInstanceRequest
 	if err := ctx.Bind(&request); err != nil {
 		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
 	}
 
-	// ================================
-	// 2️⃣ Validação do DTO
-	// ================================
+	// Garante que o ID vem da URL, não do body
+	request.ID = id
+
 	if err := validator.New().Struct(&request); err != nil {
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
 	}
@@ -129,7 +120,7 @@ func (s *Instance) Update(ctx echo.Context) error {
 	c := ctx.Request().Context()
 
 	// ================================
-	// 3️⃣ Buscar instância atual
+	// 2️⃣ Buscar instância atual
 	// ================================
 	currentList, err := s.repo.List(c, request.ID)
 	if err != nil {
@@ -154,7 +145,7 @@ func (s *Instance) Update(ctx echo.Context) error {
 	)
 
 	// ================================
-	// 4️⃣ Atualizações parciais (PATCH)
+	// 3️⃣ Atualizações parciais (PATCH)
 	// ================================
 
 	// ---------- Webhook ----------
@@ -238,7 +229,7 @@ func (s *Instance) Update(ctx echo.Context) error {
 	}
 
 	// ================================
-	// 5️⃣ Persistir no banco
+	// 4️⃣ Persistir no banco
 	// ================================
 	zap.L().Info("instance after modifications",
 		zap.String("id", current.ID),
@@ -259,7 +250,7 @@ func (s *Instance) Update(ctx echo.Context) error {
 	}
 
 	// ================================
-	// 6️⃣ Buscar dados atualizados do banco
+	// 5️⃣ Buscar dados atualizados do banco
 	// ================================
 	updatedList, err := s.repo.List(c, request.ID)
 	if err != nil {
@@ -271,9 +262,6 @@ func (s *Instance) Update(ctx echo.Context) error {
 		return utils.HTTPFail(ctx, http.StatusNotFound, nil, "instance not found after update")
 	}
 
-	// ================================
-	// 7️⃣ Resposta
-	// ================================
 	return ctx.JSON(http.StatusOK, dto.UpdateInstanceResponse{
 		Instance: &updatedList[0],
 	})
