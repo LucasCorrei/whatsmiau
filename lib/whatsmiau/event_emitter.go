@@ -23,6 +23,13 @@ import (
 	"golang.org/x/net/context"
 )
 
+// chatwootDefaultEvents são os eventos sempre escutados quando Chatwoot está configurado
+var chatwootDefaultEvents = map[string]bool{
+	"MESSAGES_UPSERT":  true,
+	"MESSAGES_UPDATE":  true,
+	"CONTACTS_UPSERT":  true,
+}
+
 type emitter struct {
 	url  string
 	data any
@@ -113,6 +120,26 @@ func (s *Whatsmiau) emit(body any, url string) {
 	s.emitter <- emitter{url, body}
 }
 
+// hasChatwoot retorna true se a instância tem Chatwoot configurado
+func hasChatwoot(instance *models.Instance) bool {
+	return instance.ChatwootAccountID != "" &&
+		instance.ChatwootToken != "" &&
+		instance.ChatwootURL != ""
+}
+
+// buildEventMap constrói o mapa de eventos do webhook.
+// Se o webhook for nil ou não tiver eventos, retorna mapa vazio.
+func buildWebhookEventMap(instance *models.Instance) map[string]bool {
+	eventMap := make(map[string]bool)
+	if instance.Webhook == nil {
+		return eventMap
+	}
+	for _, event := range instance.Webhook.Events {
+		eventMap[event] = true
+	}
+	return eventMap
+}
+
 func (s *Whatsmiau) Handle(id string) whatsmeow.EventHandler {
 	return func(evt any) {
 		s.handlerSemaphore <- struct{}{}
@@ -124,30 +151,34 @@ func (s *Whatsmiau) Handle(id string) whatsmeow.EventHandler {
 				return
 			}
 
-			eventMap := make(map[string]bool)
-			for _, event := range instance.Webhook.Events {
-				eventMap[event] = true
+			// Mapa de eventos do webhook (vazio se webhook não configurado)
+			webhookEventMap := buildWebhookEventMap(instance)
+
+			// Mapa de eventos do Chatwoot (fixo quando configurado)
+			chatwootEventMap := make(map[string]bool)
+			if hasChatwoot(instance) {
+				chatwootEventMap = chatwootDefaultEvents
 			}
 
 			switch e := evt.(type) {
 			case *events.LoggedOut:
 				s.handleLoggedOut(id)
 			case *events.Message:
-				s.handleMessageEvent(id, instance, e, eventMap)
+				s.handleMessageEvent(id, instance, e, webhookEventMap, chatwootEventMap)
 			case *events.Receipt:
-				s.handleReceiptEvent(id, instance, e, eventMap)
+				s.handleReceiptEvent(id, instance, e, webhookEventMap, chatwootEventMap)
 			case *events.BusinessName:
-				s.handleBusinessNameEvent(id, instance, e, eventMap)
+				s.handleBusinessNameEvent(id, instance, e, webhookEventMap, chatwootEventMap)
 			case *events.Contact:
-				s.handleContactEvent(id, instance, e, eventMap)
+				s.handleContactEvent(id, instance, e, webhookEventMap, chatwootEventMap)
 			case *events.Picture:
-				s.handlePictureEvent(id, instance, e, eventMap)
+				s.handlePictureEvent(id, instance, e, webhookEventMap, chatwootEventMap)
 			case *events.HistorySync:
-				s.handleHistorySyncEvent(id, instance, e, eventMap)
+				s.handleHistorySyncEvent(id, instance, e, webhookEventMap, chatwootEventMap)
 			case *events.GroupInfo:
-				s.handleGroupInfoEvent(id, instance, e, eventMap)
+				s.handleGroupInfoEvent(id, instance, e, webhookEventMap, chatwootEventMap)
 			case *events.PushName:
-				s.handlePushNameEvent(id, instance, e, eventMap)
+				s.handlePushNameEvent(id, instance, e, webhookEventMap, chatwootEventMap)
 			default:
 				zap.L().Debug("unknown event", zap.String("type", fmt.Sprintf("%T", evt)), zap.Any("raw", evt))
 			}
@@ -167,8 +198,11 @@ func (s *Whatsmiau) handleLoggedOut(id string) {
 	s.clients.Delete(id)
 }
 
-func (s *Whatsmiau) handleMessageEvent(id string, instance *models.Instance, e *events.Message, eventMap map[string]bool) {
-	if !eventMap["MESSAGES_UPSERT"] {
+func (s *Whatsmiau) handleMessageEvent(id string, instance *models.Instance, e *events.Message, webhookEventMap map[string]bool, chatwootEventMap map[string]bool) {
+	shouldEmitWebhook := webhookEventMap["MESSAGES_UPSERT"]
+	shouldEmitChatwoot := chatwootEventMap["MESSAGES_UPSERT"]
+
+	if !shouldEmitWebhook && !shouldEmitChatwoot {
 		return
 	}
 
@@ -205,15 +239,20 @@ func (s *Whatsmiau) handleMessageEvent(id string, instance *models.Instance, e *
 		zap.L().Debug("message event", zap.String("instance", id), zap.Any("data", wookMessage.Data))
 	}
 
-	s.emit(wookMessage, instance.Webhook.Url)
+	if shouldEmitWebhook && instance.Webhook != nil && instance.Webhook.Url != "" {
+		s.emit(wookMessage, instance.Webhook.Url)
+	}
 
-	if s.chatwootService != nil {
+	if shouldEmitChatwoot && s.chatwootService != nil {
 		go s.chatwootService.HandleMessage(messageData)
 	}
 }
 
-func (s *Whatsmiau) handleReceiptEvent(id string, instance *models.Instance, e *events.Receipt, eventMap map[string]bool) {
-	if !eventMap["MESSAGES_UPDATE"] {
+func (s *Whatsmiau) handleReceiptEvent(id string, instance *models.Instance, e *events.Receipt, webhookEventMap map[string]bool, chatwootEventMap map[string]bool) {
+	shouldEmitWebhook := webhookEventMap["MESSAGES_UPDATE"]
+	shouldEmitChatwoot := chatwootEventMap["MESSAGES_UPDATE"]
+
+	if !shouldEmitWebhook && !shouldEmitChatwoot {
 		return
 	}
 
@@ -234,12 +273,14 @@ func (s *Whatsmiau) handleReceiptEvent(id string, instance *models.Instance, e *
 			Event:    WookMessagesUpdate,
 		}
 
-		s.emit(wookData, instance.Webhook.Url)
+		if shouldEmitWebhook && instance.Webhook != nil && instance.Webhook.Url != "" {
+			s.emit(wookData, instance.Webhook.Url)
+		}
 	}
 }
 
-func (s *Whatsmiau) handleBusinessNameEvent(id string, instance *models.Instance, e *events.BusinessName, eventMap map[string]bool) {
-	if !eventMap["CONTACTS_UPSERT"] {
+func (s *Whatsmiau) handleBusinessNameEvent(id string, instance *models.Instance, e *events.BusinessName, webhookEventMap map[string]bool, chatwootEventMap map[string]bool) {
+	if !webhookEventMap["CONTACTS_UPSERT"] && !chatwootEventMap["CONTACTS_UPSERT"] {
 		return
 	}
 
@@ -256,11 +297,13 @@ func (s *Whatsmiau) handleBusinessNameEvent(id string, instance *models.Instance
 		Event:    WookContactsUpsert,
 	}
 
-	s.emit(wookData, instance.Webhook.Url)
+	if webhookEventMap["CONTACTS_UPSERT"] && instance.Webhook != nil && instance.Webhook.Url != "" {
+		s.emit(wookData, instance.Webhook.Url)
+	}
 }
 
-func (s *Whatsmiau) handleContactEvent(id string, instance *models.Instance, e *events.Contact, eventMap map[string]bool) {
-	if !eventMap["CONTACTS_UPSERT"] {
+func (s *Whatsmiau) handleContactEvent(id string, instance *models.Instance, e *events.Contact, webhookEventMap map[string]bool, chatwootEventMap map[string]bool) {
+	if !webhookEventMap["CONTACTS_UPSERT"] && !chatwootEventMap["CONTACTS_UPSERT"] {
 		return
 	}
 
@@ -281,11 +324,13 @@ func (s *Whatsmiau) handleContactEvent(id string, instance *models.Instance, e *
 		Event:    WookContactsUpsert,
 	}
 
-	s.emit(wookData, instance.Webhook.Url)
+	if webhookEventMap["CONTACTS_UPSERT"] && instance.Webhook != nil && instance.Webhook.Url != "" {
+		s.emit(wookData, instance.Webhook.Url)
+	}
 }
 
-func (s *Whatsmiau) handlePictureEvent(id string, instance *models.Instance, e *events.Picture, eventMap map[string]bool) {
-	if !eventMap["CONTACTS_UPSERT"] {
+func (s *Whatsmiau) handlePictureEvent(id string, instance *models.Instance, e *events.Picture, webhookEventMap map[string]bool, chatwootEventMap map[string]bool) {
+	if !webhookEventMap["CONTACTS_UPSERT"] && !chatwootEventMap["CONTACTS_UPSERT"] {
 		return
 	}
 
@@ -301,11 +346,13 @@ func (s *Whatsmiau) handlePictureEvent(id string, instance *models.Instance, e *
 		Event:    WookContactsUpsert,
 	}
 
-	s.emit(wookData, instance.Webhook.Url)
+	if webhookEventMap["CONTACTS_UPSERT"] && instance.Webhook != nil && instance.Webhook.Url != "" {
+		s.emit(wookData, instance.Webhook.Url)
+	}
 }
 
-func (s *Whatsmiau) handleHistorySyncEvent(id string, instance *models.Instance, e *events.HistorySync, eventMap map[string]bool) {
-	if !eventMap["CONTACTS_UPSERT"] {
+func (s *Whatsmiau) handleHistorySyncEvent(id string, instance *models.Instance, e *events.HistorySync, webhookEventMap map[string]bool, chatwootEventMap map[string]bool) {
+	if !webhookEventMap["CONTACTS_UPSERT"] && !chatwootEventMap["CONTACTS_UPSERT"] {
 		return
 	}
 
@@ -321,11 +368,13 @@ func (s *Whatsmiau) handleHistorySyncEvent(id string, instance *models.Instance,
 		Event:    WookContactsUpsert,
 	}
 
-	s.emit(wookData, instance.Webhook.Url)
+	if webhookEventMap["CONTACTS_UPSERT"] && instance.Webhook != nil && instance.Webhook.Url != "" {
+		s.emit(wookData, instance.Webhook.Url)
+	}
 }
 
-func (s *Whatsmiau) handleGroupInfoEvent(id string, instance *models.Instance, e *events.GroupInfo, eventMap map[string]bool) {
-	if !eventMap["CONTACTS_UPSERT"] {
+func (s *Whatsmiau) handleGroupInfoEvent(id string, instance *models.Instance, e *events.GroupInfo, webhookEventMap map[string]bool, chatwootEventMap map[string]bool) {
+	if !webhookEventMap["CONTACTS_UPSERT"] && !chatwootEventMap["CONTACTS_UPSERT"] {
 		return
 	}
 
@@ -346,11 +395,13 @@ func (s *Whatsmiau) handleGroupInfoEvent(id string, instance *models.Instance, e
 		Event:    WookContactsUpsert,
 	}
 
-	s.emit(wookData, instance.Webhook.Url)
+	if webhookEventMap["CONTACTS_UPSERT"] && instance.Webhook != nil && instance.Webhook.Url != "" {
+		s.emit(wookData, instance.Webhook.Url)
+	}
 }
 
-func (s *Whatsmiau) handlePushNameEvent(id string, instance *models.Instance, e *events.PushName, eventMap map[string]bool) {
-	if !eventMap["CONTACTS_UPSERT"] {
+func (s *Whatsmiau) handlePushNameEvent(id string, instance *models.Instance, e *events.PushName, webhookEventMap map[string]bool, chatwootEventMap map[string]bool) {
+	if !webhookEventMap["CONTACTS_UPSERT"] && !chatwootEventMap["CONTACTS_UPSERT"] {
 		return
 	}
 
@@ -371,12 +422,12 @@ func (s *Whatsmiau) handlePushNameEvent(id string, instance *models.Instance, e 
 		Event:    WookContactsUpsert,
 	}
 
-	s.emit(wookData, instance.Webhook.Url)
+	if webhookEventMap["CONTACTS_UPSERT"] && instance.Webhook != nil && instance.Webhook.Url != "" {
+		s.emit(wookData, instance.Webhook.Url)
+	}
 }
 
 // parseWAMessage converts a raw waE2E.Message into our internal representation.
-// It only inspects the content of the protobuf message itself –
-// media upload (URL/Base64 generation) is handled later by the caller.
 func (s *Whatsmiau) parseWAMessage(m *waE2E.Message) (string, *WookMessageRaw, *waE2E.ContextInfo) {
 	var messageType string
 	raw := &WookMessageRaw{}
@@ -427,21 +478,18 @@ func (s *Whatsmiau) parseWAMessage(m *waE2E.Message) (string, *WookMessageRaw, *
 			JpegThumbnail:     b64(img.GetJPEGThumbnail()),
 			ViewOnce:          img.GetViewOnce(),
 		}
-	
-	}	 else if sticker := m.GetStickerMessage(); sticker != nil {
-			messageType = "stickerMessage"
-
-			raw.StickerMessage = &WookStickerMessageRaw{
-				Url:           sticker.GetURL(),
-				Mimetype:      sticker.GetMimetype(),
-				FileSha256:    base64.StdEncoding.EncodeToString(sticker.GetFileSHA256()),
-				FileEncSha256: base64.StdEncoding.EncodeToString(sticker.GetFileEncSHA256()),
-				MediaKey:      base64.StdEncoding.EncodeToString(sticker.GetMediaKey()),
-				DirectPath:    sticker.GetDirectPath(),
-				IsAnimated:    sticker.GetIsAnimated(),
-			}
-
-			ci = sticker.GetContextInfo()
+	} else if sticker := m.GetStickerMessage(); sticker != nil {
+		messageType = "stickerMessage"
+		raw.StickerMessage = &WookStickerMessageRaw{
+			Url:           sticker.GetURL(),
+			Mimetype:      sticker.GetMimetype(),
+			FileSha256:    base64.StdEncoding.EncodeToString(sticker.GetFileSHA256()),
+			FileEncSha256: base64.StdEncoding.EncodeToString(sticker.GetFileEncSHA256()),
+			MediaKey:      base64.StdEncoding.EncodeToString(sticker.GetMediaKey()),
+			DirectPath:    sticker.GetDirectPath(),
+			IsAnimated:    sticker.GetIsAnimated(),
+		}
+		ci = sticker.GetContextInfo()
 	} else if aud := m.GetAudioMessage(); aud != nil {
 		messageType = "audioMessage"
 		ci = aud.GetContextInfo()
@@ -525,17 +573,15 @@ func (s *Whatsmiau) parseWAMessage(m *waE2E.Message) (string, *WookMessageRaw, *
 		}
 		ci = contactArray.GetContextInfo()
 	} else if loc := m.GetLocationMessage(); loc != nil {
-	messageType = "locationMessage"
-
-	raw.LocationMessage = &WookLocationMessageRaw{
-		DegreesLatitude:  loc.GetDegreesLatitude(),
-		DegreesLongitude: loc.GetDegreesLongitude(),
-		Name:             loc.GetName(),
-		Address:          loc.GetAddress(),
-		Url:              loc.GetURL(),
-	}
-
-	ci = loc.GetContextInfo()
+		messageType = "locationMessage"
+		raw.LocationMessage = &WookLocationMessageRaw{
+			DegreesLatitude:  loc.GetDegreesLatitude(),
+			DegreesLongitude: loc.GetDegreesLongitude(),
+			Name:             loc.GetName(),
+			Address:          loc.GetAddress(),
+			Url:              loc.GetURL(),
+		}
+		ci = loc.GetContextInfo()
 	} else if conv := strings.TrimSpace(m.GetConversation()); conv != "" {
 		messageType = "conversation"
 		raw.Conversation = conv
@@ -666,18 +712,8 @@ func (s *Whatsmiau) convertEventMessage(id string, instance *models.Instance, ev
 		}
 	case "stickerMessage":
 		if st := m.GetStickerMessage(); st != nil {
-	
-			// 🔥 Força virar imagem
 			messageType = "imageMessage"
-	
-			raw.MediaURL, raw.Base64 = s.uploadMessageFile(
-				ctx,
-				instance,
-				client,
-				st,
-				"image/webp", // sticker sempre é webp
-				"",
-			)
+			raw.MediaURL, raw.Base64 = s.uploadMessageFile(ctx, instance, client, st, "image/webp", "")
 		}
 	case "audioMessage":
 		if aud := m.GetAudioMessage(); aud != nil {
@@ -797,29 +833,25 @@ func (s *Whatsmiau) uploadMessageFile(ctx context.Context, instance *models.Inst
 	}
 	defer os.Remove(tmpFile.Name())
 
-	// 1. Download do arquivo
 	if err := client.DownloadToFile(ctx, fileMessage, tmpFile); err != nil {
 		zap.L().Error("failed to download media", zap.Error(err))
 		return "", ""
 	}
 
-	// 2. Seek para o início antes de qualquer leitura
 	if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
 		zap.L().Error("failed to seek media file", zap.Error(err))
 		return "", ""
 	}
 
-	// 3. Detecta extensão (pode consumir parte do cursor via sniffing)
 	ext = extractExtFromFile(fileName, mimetype, tmpFile)
 
-	// 4. Seek novamente antes de ler para Base64
 	if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
 		zap.L().Error("failed to seek media file before base64", zap.Error(err))
 		return "", ""
 	}
 
-	// 5. Gera Base64 se habilitado na instância
-	if instance.Webhook.Base64 != nil && *instance.Webhook.Base64 {
+	// Gera Base64 se habilitado na instância
+	if instance.Webhook != nil && instance.Webhook.Base64 != nil && *instance.Webhook.Base64 {
 		data, err := io.ReadAll(tmpFile)
 		if err != nil {
 			zap.L().Error("failed to read media for base64", zap.Error(err))
@@ -834,7 +866,6 @@ func (s *Whatsmiau) uploadMessageFile(ctx context.Context, instance *models.Inst
 		}
 	}
 
-	// 6. Upload para storage (GCS etc) se configurado
 	if s.fileStorage != nil {
 		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
 			zap.L().Error("failed to seek media file before upload", zap.Error(err))
