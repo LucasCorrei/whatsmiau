@@ -21,8 +21,7 @@ type CreateInstanceRequest struct {
 	Webhook *models.InstanceWebhook `json:"webhook,omitempty"`
 
 	// ===== Chatwoot =====
-// ===== Chatwoot =====
-	ChatwootAccountID               *int    `json:"chatwootAccountId,omitempty"`
+	ChatwootAccountID               *string `json:"chatwootAccountId,omitempty"`
 	ChatwootToken                   *string `json:"chatwootToken,omitempty"`
 	ChatwootURL                     *string `json:"chatwootUrl,omitempty"`
 	ChatwootSignMsg                 *bool   `json:"chatwootSignMsg,omitempty"`
@@ -54,7 +53,7 @@ type UpdateInstanceRequest struct {
 	Webhook *models.InstanceWebhook `json:"webhook,omitempty"`
 
 	// ===== Chatwoot =====
-	ChatwootAccountID               *int    `json:"chatwootAccountId,omitempty"`
+	ChatwootAccountID               *string `json:"chatwootAccountId,omitempty"`
 	ChatwootToken                   *string `json:"chatwootToken,omitempty"`
 	ChatwootURL                     *string `json:"chatwootUrl,omitempty"`
 	ChatwootSignMsg                 *bool   `json:"chatwootSignMsg,omitempty"`
