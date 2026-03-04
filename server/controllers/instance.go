@@ -58,7 +58,7 @@ func (s *Instance) Create(ctx echo.Context) error {
 		Webhook: request.Webhook,
 
 		// Chatwoot — deref ponteiros → value types do model
-		ChatwootAccountID:               derefInt(request.ChatwootAccountID),
+		ChatwootAccountID:               derefString(request.ChatwootAccountID),
 		ChatwootToken:                   derefString(request.ChatwootToken),
 		ChatwootURL:                     derefString(request.ChatwootURL),
 		ChatwootSignMsg:                 derefBool(request.ChatwootSignMsg),
@@ -129,17 +129,6 @@ func (s *Instance) Update(ctx echo.Context) error {
 	}
 
 	current := &currentList[0]
-
-	zap.L().Info("instance before update",
-		zap.String("id", current.ID),
-		zap.String("chatwoot_url", current.ChatwootURL),
-		zap.String("webhook_url", func() string {
-			if current.Webhook != nil {
-				return current.Webhook.Url
-			}
-			return "nil"
-		}()),
-	)
 
 	// ================================
 	// Atualizações parciais (PATCH)
@@ -224,19 +213,6 @@ func (s *Instance) Update(ctx echo.Context) error {
 	if request.ProxyPassword != nil {
 		current.ProxyPassword = *request.ProxyPassword
 	}
-
-	zap.L().Info("instance after modifications",
-		zap.String("id", current.ID),
-		zap.String("chatwoot_url", current.ChatwootURL),
-		zap.String("chatwoot_token", current.ChatwootToken),
-		zap.Int("chatwoot_account_id", current.ChatwootAccountID),
-		zap.String("webhook_url", func() string {
-			if current.Webhook != nil {
-				return current.Webhook.Url
-			}
-			return "nil"
-		}()),
-	)
 
 	_, err = s.repo.Update(c, request.ID, current)
 	if err != nil {
