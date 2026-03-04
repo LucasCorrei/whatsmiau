@@ -22,36 +22,36 @@ type Instance struct {
 	// ===== Core Config =====
 	Integration string `json:"integration,omitempty"`
 	Token       string `json:"token,omitempty"`
-	QRCode      bool   `json:"qrcode,omitempty"`
+	QRCode      bool   `json:"qrcode"`
 	Number      string `json:"number,omitempty"`
 
-	RejectCall        bool   `json:"rejectCall,omitempty"`
-	MsgCall           string `json:"msgCall,omitempty"`
-	GroupsIgnore      bool   `json:"groupsIgnore,omitempty"`
-	AlwaysOnline      bool   `json:"alwaysOnline,omitempty"`
-	ReadMessages      bool   `json:"readMessages,omitempty"`
-	ReadStatus        bool   `json:"readStatus,omitempty"`
-	SyncFullHistory   bool   `json:"syncFullHistory,omitempty"`
+	RejectCall        bool   `json:"rejectCall"`
+	MsgCall           string `json:"msgCall"`
+	GroupsIgnore      bool   `json:"groupsIgnore"`
+	AlwaysOnline      bool   `json:"alwaysOnline"`
+	ReadMessages      bool   `json:"readMessages"`
+	ReadStatus        bool   `json:"readStatus"`
+	SyncFullHistory   bool   `json:"syncFullHistory"`
 	SyncRecentHistory bool   `json:"syncRecentHistory,omitempty"`
 	RemoteJID         string `json:"remoteJID,omitempty"`
 
-	// ===== Webhook ===== (PONTEIRO para permitir nil check)
+	// ===== Webhook =====
 	Webhook *InstanceWebhook `json:"webhook,omitempty"`
 
 	// ===== Chatwoot =====
-	ChatwootAccountID               int    `json:"chatwootAccountId,omitempty"`
-	ChatwootToken                   string `json:"chatwootToken,omitempty"`
-	ChatwootURL                     string `json:"chatwootUrl,omitempty"`
-	ChatwootSignMsg                 bool   `json:"chatwootSignMsg,omitempty"`
-	ChatwootReopenConversation      bool   `json:"chatwootReopenConversation,omitempty"`
-	ChatwootConversationPending     bool   `json:"chatwootConversationPending,omitempty"`
-	ChatwootImportContacts          bool   `json:"chatwootImportContacts,omitempty"`
-	ChatwootNameInbox               string `json:"chatwootNameInbox,omitempty"`
-	ChatwootMergeBrazilContacts     bool   `json:"chatwootMergeBrazilContacts,omitempty"`
-	ChatwootImportMessages          bool   `json:"chatwootImportMessages,omitempty"`
-	ChatwootDaysLimitImportMessages int    `json:"chatwootDaysLimitImportMessages,omitempty"`
-	ChatwootOrganization            string `json:"chatwootOrganization,omitempty"`
-	ChatwootLogo                    string `json:"chatwootLogo,omitempty"`
+	ChatwootAccountID               string `json:"chatwootAccountId"`
+	ChatwootToken                   string `json:"chatwootToken"`
+	ChatwootURL                     string `json:"chatwootUrl"`
+	ChatwootSignMsg                 bool   `json:"chatwootSignMsg"`
+	ChatwootReopenConversation      bool   `json:"chatwootReopenConversation"`
+	ChatwootConversationPending     bool   `json:"chatwootConversationPending"`
+	ChatwootImportContacts          bool   `json:"chatwootImportContacts"`
+	ChatwootNameInbox               string `json:"chatwootNameInbox"`
+	ChatwootMergeBrazilContacts     bool   `json:"chatwootMergeBrazilContacts"`
+	ChatwootImportMessages          bool   `json:"chatwootImportMessages"`
+	ChatwootDaysLimitImportMessages int    `json:"chatwootDaysLimitImportMessages"`
+	ChatwootOrganization            string `json:"chatwootOrganization"`
+	ChatwootLogo                    string `json:"chatwootLogo"`
 
 	// ===== Proxy =====
 	InstanceProxy
