@@ -101,7 +101,7 @@ func (s *RedisInstance) Update(ctx context.Context, id string, toUpdate *models.
 	}
 
 	// ---------- Chatwoot ----------
-	if toUpdate.ChatwootAccountID != 0 {
+	if toUpdate.ChatwootAccountID != "" {
 		oldInstance.ChatwootAccountID = toUpdate.ChatwootAccountID
 	}
 	if toUpdate.ChatwootToken != "" {
