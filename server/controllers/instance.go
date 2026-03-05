@@ -85,13 +85,45 @@ func (s *Instance) Create(ctx echo.Context) error {
 	c := ctx.Request().Context()
 
 	if err := s.repo.Create(c, &instance); err != nil {
-		zap.L().Error("failed to create instance", zap.Error(err))
-		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to create instance")
-	}
+    zap.L().Error("failed to create instance", zap.Error(err))
+    return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to create instance")
+}
 
-	return ctx.JSON(http.StatusCreated, dto.CreateInstanceResponse{
-		Instance: instance,
-	})
+// ADICIONAR AQUI ↓
+if instance.ChatwootURL != "" && instance.ChatwootToken != "" && instance.ChatwootAccountID != "" {
+    go func() {
+        svc := whatsmiau.NewChatwootService(whatsmiau.ChatwootConfig{
+            URL:       instance.ChatwootURL,
+            AccountID: instance.ChatwootAccountID,
+            Token:     instance.ChatwootToken,
+        })
+
+        inboxName := instance.ChatwootNameInbox
+        if inboxName == "" {
+            inboxName = instance.ID
+        }
+
+        webhookURL := fmt.Sprintf("%s/chatwoot/webhook/%s", instance.ChatwootURL, instance.ID)
+
+        inboxID, err := svc.InitInstance(
+            context.Background(),
+            inboxName,
+            webhookURL,
+            instance.ChatwootOrganization,
+            instance.ChatwootLogo,
+        )
+        if err != nil {
+            zap.L().Error("chatwoot: falha ao criar inbox", zap.Error(err))
+            return
+        }
+        zap.L().Info("chatwoot: ✅ inbox criada", zap.Int("inboxId", inboxID))
+    }()
+}
+// FIM DA ADIÇÃO ↑
+
+return ctx.JSON(http.StatusCreated, dto.CreateInstanceResponse{
+    Instance: instance,
+})
 }
 
 func (s *Instance) Update(ctx echo.Context) error {
