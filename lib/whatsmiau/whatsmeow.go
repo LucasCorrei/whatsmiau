@@ -84,7 +84,8 @@ func LoadMiau(ctx context.Context, container *sqlstore.Container) {
 			continue
 		}
 
-		instanceFound, ok := instanceByRemoteJid[client.Store.ID.String()]
+		// FIX: usa ToNonAD() para normalizar o JID (remove o sufixo :XX do device)
+		instanceFound, ok := instanceByRemoteJid[client.Store.ID.ToNonAD().String()]
 		if ok {
 			configProxy(client, instanceFound.InstanceProxy)
 			clients.Store(instanceFound.ID, client)
@@ -291,8 +292,11 @@ func (s *Whatsmiau) observeConnection(client *whatsmeow.Client, id string) {
 				zap.L().Info("device connected successfully", zap.String("id", id))
 				client.RemoveEventHandlers()
 				client.AddEventHandler(s.Handle(id))
+
+				// FIX: usa ToNonAD() para salvar o JID sem o sufixo :XX do device
+				// Isso evita o FK violation em whatsmeow_pre_keys e whatsmeow_identity_keys
 				if _, err := s.repo.Update(context.Background(), id, &models.Instance{
-					RemoteJID: client.Store.ID.String(),
+					RemoteJID: client.Store.ID.ToNonAD().String(),
 				}); err != nil {
 					zap.L().Error("failed to update instance after login", zap.Error(err))
 				}
@@ -394,6 +398,11 @@ func (s *Whatsmiau) Disconnect(id string) error {
 }
 
 func (s *Whatsmiau) GetJidLid(ctx context.Context, id string, jid types.JID) (string, string) {
+	// FIX: nil check para evitar panic quando o receiver é nil
+	if s == nil {
+		return jid.ToNonAD().String(), ""
+	}
+
 	newJid, newLid := s.extractJidLid(ctx, id, jid)
 	if strings.HasSuffix(newJid, "@lid") {
 		newLid = newJid
@@ -405,6 +414,11 @@ func (s *Whatsmiau) GetJidLid(ctx context.Context, id string, jid types.JID) (st
 func (s *Whatsmiau) extractJidLid(ctx context.Context, id string, jid types.JID) (string, string) {
 	client, ok := s.clients.Load(id)
 	if !ok {
+		return jid.ToNonAD().String(), ""
+	}
+
+	// FIX: nil check no Store e LIDs para evitar panic
+	if client.Store == nil || client.Store.LIDs == nil {
 		return jid.ToNonAD().String(), ""
 	}
 
@@ -434,23 +448,23 @@ func (s *Whatsmiau) extractJidLid(ctx context.Context, id string, jid types.JID)
 
 	return jid.ToNonAD().String(), ""
 }
+
 func loadChatwootService() *ChatwootService {
-    url := env.Env.ChatwootURL
-    accountID := env.Env.ChatwootAccountID
-    token := env.Env.ChatwootToken
-    inboxID := env.Env.ChatwootInboxID
+	url := env.Env.ChatwootURL
+	accountID := env.Env.ChatwootAccountID
+	token := env.Env.ChatwootToken
+	inboxID := env.Env.ChatwootInboxID
 
-    if url == "" || accountID == "" || token == "" || inboxID == 0 {
-        zap.L().Info("chatwoot: não configurado, integração desativada")
-        return nil
-    }
+	if url == "" || accountID == "" || token == "" || inboxID == 0 {
+		zap.L().Info("chatwoot: não configurado, integração desativada")
+		return nil
+	}
 
-    zap.L().Info("chatwoot: integração ativada", zap.String("url", url))
-    return NewChatwootService(ChatwootConfig{
-        URL:       url,
-        AccountID: accountID,
-        Token:     token,
-        InboxID:   inboxID,
-    })
+	zap.L().Info("chatwoot: integração ativada", zap.String("url", url))
+	return NewChatwootService(ChatwootConfig{
+		URL:       url,
+		AccountID: accountID,
+		Token:     token,
+		InboxID:   inboxID,
+	})
 }
-
