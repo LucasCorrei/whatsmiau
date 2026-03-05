@@ -244,7 +244,7 @@ func (s *Whatsmiau) handleMessageEvent(id string, instance *models.Instance, e *
 	}
 
 	if shouldEmitChatwoot && s.chatwootService != nil {
-		go s.chatwootService.HandleMessage(messageData)
+		go s.chatwootService.HandleMessage(id, messageData)
 	}
 }
 
