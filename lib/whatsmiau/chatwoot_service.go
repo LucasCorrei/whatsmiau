@@ -11,9 +11,10 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"regexp"
 	"strings"
 	"time"
-	"regexp"
+
 	_ "github.com/lib/pq"
 	"github.com/verbeux-ai/whatsmiau/env"
 	"go.uber.org/zap"
@@ -40,8 +41,8 @@ func NewChatwootService(config ChatwootConfig) *ChatwootService {
 
 	// Se o Chatwoot não está habilitado, retorna sem inicializar nada
 	if config.URL == "" || config.Token == "" || config.AccountID == "" {
-   		 zap.L().Info("chatwoot: desabilitado para esta instância (config incompleta)")
-  	return service
+		zap.L().Info("chatwoot: desabilitado para esta instância (config incompleta)")
+		return service
 	}
 
 	zap.L().Info("chatwoot: serviço HABILITADO")
@@ -78,7 +79,6 @@ func NewChatwootService(config ChatwootConfig) *ChatwootService {
 
 // maskPassword mascara a senha na URI do PostgreSQL para logs
 func maskPassword(uri string) string {
-	// postgres://user:password@host:port/db -> postgres://user:***@host:port/db
 	if strings.Contains(uri, "@") && strings.Contains(uri, "://") {
 		parts := strings.Split(uri, "://")
 		if len(parts) == 2 {
@@ -106,9 +106,9 @@ func (c *ChatwootService) Close() error {
 
 // IsEnabled verifica se o Chatwoot está habilitado
 func (c *ChatwootService) IsEnabled() bool {
-    return c.config.URL != "" &&
-           c.config.Token != "" &&
-           c.config.AccountID != ""
+	return c.config.URL != "" &&
+		c.config.Token != "" &&
+		c.config.AccountID != ""
 }
 
 // ── Tipos de resposta da API ──────────────────────────────────────────────────
@@ -121,7 +121,6 @@ type chatwootContactFilterResponse struct {
 	Payload []chatwootContact `json:"payload"`
 }
 
-// CORRIGIDO: A API retorna o contato diretamente em payload, não em payload.contact
 type chatwootContactCreateResponse struct {
 	Payload chatwootContact `json:"payload"`
 }
@@ -140,20 +139,237 @@ type chatwootConversationCreateResponse struct {
 	ID int `json:"id"`
 }
 
+type chatwootInbox struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+type chatwootInboxListResponse struct {
+	Payload []chatwootInbox `json:"payload"`
+}
+
+type chatwootInboxCreateResponse struct {
+	ID int `json:"id"`
+}
+
+// ── Init Instance (equivalente ao initInstanceChatwoot da Evolution) ──────────
+
+// InitInstance cria a inbox no Chatwoot se não existir, cria o contato bot,
+// a conversa inicial e envia a mensagem "init" — replicando o comportamento
+// da Evolution API. Deve ser chamado ao criar/iniciar uma instância.
+func (c *ChatwootService) InitInstance(ctx context.Context, inboxName, webhookURL, organization, logo string) (int, error) {
+	if !c.IsEnabled() {
+		return 0, fmt.Errorf("chatwoot não está habilitado")
+	}
+
+	zap.L().Info("chatwoot: 🚀 inicializando instância",
+		zap.String("inboxName", inboxName),
+		zap.String("webhookURL", webhookURL))
+
+	// 1. Busca ou cria a inbox
+	inboxID, err := c.findOrCreateInbox(ctx, inboxName, webhookURL)
+	if err != nil {
+		return 0, fmt.Errorf("erro ao buscar/criar inbox: %w", err)
+	}
+
+	zap.L().Info("chatwoot: ✅ inbox pronta", zap.Int("inboxId", inboxID))
+
+	// 2. Atualiza o InboxID no config para uso nas conversas
+	c.config.InboxID = inboxID
+
+	// 3. Define organização e logo com fallbacks
+	orgName := organization
+	if orgName == "" {
+		orgName = "WhatsMiau"
+	}
+	logoURL := logo
+	if logoURL == "" {
+		logoURL = "https://evolution-api.com/files/evolution-api-favicon.png"
+	}
+
+	// 4. Cria contato bot (123456) — igual à Evolution
+	botContactID, err := c.findOrCreateBotContact(ctx, inboxID, orgName, logoURL)
+	if err != nil {
+		zap.L().Warn("chatwoot: erro ao criar contato bot (não crítico)", zap.Error(err))
+	} else {
+		zap.L().Info("chatwoot: ✅ contato bot pronto", zap.Int("contactId", botContactID))
+
+		// 5. Cria conversa do bot e envia mensagem "init"
+		if botContactID > 0 {
+			if err := c.createBotConversation(ctx, botContactID, inboxID); err != nil {
+				zap.L().Warn("chatwoot: erro ao criar conversa bot (não crítico)", zap.Error(err))
+			}
+		}
+	}
+
+	return inboxID, nil
+}
+
+func (c *ChatwootService) findOrCreateInbox(ctx context.Context, inboxName, webhookURL string) (int, error) {
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/inboxes", c.config.URL, c.config.AccountID)
+
+	resp, err := c.doRequest(ctx, "GET", url, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	var listResp chatwootInboxListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+		return 0, fmt.Errorf("erro ao decodificar lista de inboxes: %w", err)
+	}
+
+	// Verifica se já existe inbox com esse nome (igual ao checkDuplicate da Evolution)
+	for _, inbox := range listResp.Payload {
+		if inbox.Name == inboxName {
+			zap.L().Info("chatwoot: inbox já existe",
+				zap.String("name", inboxName),
+				zap.Int("id", inbox.ID))
+			return inbox.ID, nil
+		}
+	}
+
+	// Cria nova inbox
+	zap.L().Info("chatwoot: criando nova inbox", zap.String("name", inboxName))
+	return c.createInbox(ctx, inboxName, webhookURL)
+}
+
+func (c *ChatwootService) createInbox(ctx context.Context, name, webhookURL string) (int, error) {
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/inboxes", c.config.URL, c.config.AccountID)
+	body := map[string]interface{}{
+		"name": name,
+		"channel": map[string]interface{}{
+			"type":        "api",
+			"webhook_url": webhookURL,
+		},
+	}
+
+	resp, err := c.doRequest(ctx, "POST", url, body)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		return 0, fmt.Errorf("erro ao criar inbox: %d - %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var result chatwootInboxCreateResponse
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return 0, fmt.Errorf("erro ao decodificar resposta de criar inbox: %w", err)
+	}
+
+	if result.ID <= 0 {
+		return 0, fmt.Errorf("inbox criada com ID inválido: %s", string(bodyBytes))
+	}
+
+	zap.L().Info("chatwoot: ✅ inbox criada", zap.Int("inboxId", result.ID))
+	return result.ID, nil
+}
+
+func (c *ChatwootService) findOrCreateBotContact(ctx context.Context, inboxID int, orgName, logoURL string) (int, error) {
+	// Busca contato bot pelo telefone "123456"
+	id, err := c.searchContact(ctx, "123456")
+	if err == nil && id > 0 {
+		zap.L().Info("chatwoot: contato bot já existe", zap.Int("contactId", id))
+		return id, nil
+	}
+
+	// Cria contato bot
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts", c.config.URL, c.config.AccountID)
+	body := map[string]interface{}{
+		"name":         orgName,
+		"phone_number": "+123456",
+		"avatar_url":   logoURL,
+		"inbox_id":     inboxID,
+	}
+
+	resp, err := c.doRequest(ctx, "POST", url, body)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		return 0, fmt.Errorf("erro ao criar contato bot: %d - %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var result chatwootContactCreateResponse
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return 0, fmt.Errorf("erro ao decodificar contato bot: %w", err)
+	}
+
+	if result.Payload.ID <= 0 {
+		return 0, fmt.Errorf("contato bot criado com ID inválido")
+	}
+
+	zap.L().Info("chatwoot: ✅ contato bot criado", zap.Int("contactId", result.Payload.ID))
+	return result.Payload.ID, nil
+}
+
+func (c *ChatwootService) createBotConversation(ctx context.Context, contactID, inboxID int) error {
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations", c.config.URL, c.config.AccountID)
+	body := map[string]interface{}{
+		"contact_id": fmt.Sprintf("%d", contactID),
+		"inbox_id":   fmt.Sprintf("%d", inboxID),
+	}
+
+	resp, err := c.doRequest(ctx, "POST", url, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("erro ao criar conversa bot: %d - %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var conv chatwootConversationCreateResponse
+	if err := json.Unmarshal(bodyBytes, &conv); err != nil {
+		return fmt.Errorf("erro ao decodificar conversa bot: %w", err)
+	}
+
+	if conv.ID <= 0 {
+		return fmt.Errorf("conversa bot criada com ID inválido")
+	}
+
+	// Envia mensagem "init" — igual à Evolution
+	msgURL := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
+		c.config.URL, c.config.AccountID, conv.ID)
+	msgBody := map[string]interface{}{
+		"content":      "init",
+		"message_type": "outgoing",
+	}
+
+	msgResp, err := c.doRequest(ctx, "POST", msgURL, msgBody)
+	if err != nil {
+		return fmt.Errorf("erro ao enviar mensagem init: %w", err)
+	}
+	defer msgResp.Body.Close()
+
+	zap.L().Info("chatwoot: ✅ conversa bot criada e mensagem init enviada",
+		zap.Int("conversationId", conv.ID))
+
+	return nil
+}
+
 // ── Handler principal ─────────────────────────────────────────────────────────
 
 func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
-	// Verifica se está habilitado
 	if !c.IsEnabled() {
-    	return
+		return
 	}
 
 	if messageData == nil || messageData.Key == nil {
 		return
 	}
 
-	// CORRIGIDO: Aceita tanto mensagens de entrada quanto de saída
-	// (para sincronizar mensagens enviadas diretamente do WhatsApp)
 	isFromMe := messageData.Key.FromMe
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -191,7 +407,6 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 		return
 	}
 
-	// CORRIGIDO: Verifica se o contactID é válido
 	if contactID <= 0 {
 		zap.L().Error("chatwoot: contactID inválido retornado",
 			zap.Int("contactId", contactID),
@@ -207,7 +422,6 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 		return
 	}
 
-	// CORRIGIDO: Verifica se o conversationID é válido
 	if conversationID <= 0 {
 		zap.L().Error("chatwoot: conversationID inválido retornado",
 			zap.Int("conversationId", conversationID),
@@ -281,7 +495,6 @@ func (c *ChatwootService) checkMessageExists(ctx context.Context, conversationID
 		return false, nil
 	}
 
-	// Proteção adicional: se conversationID for 0 ou inválido, não verifica
 	if conversationID <= 0 {
 		zap.L().Warn("chatwoot: ⚠️ conversationID inválido, pulando verificação",
 			zap.Int("conversationId", conversationID))
@@ -388,7 +601,6 @@ func (c *ChatwootService) createContact(ctx context.Context, phone, name, identi
 	}
 	defer resp.Body.Close()
 
-	// CORRIGIDO: Log da resposta bruta para debug
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return 0, fmt.Errorf("erro ao ler resposta: %w", err)
@@ -406,8 +618,7 @@ func (c *ChatwootService) createContact(ctx context.Context, phone, name, identi
 	}
 
 	contactID := result.Payload.ID
-	
-	// CORRIGIDO: Verifica se o ID é válido
+
 	if contactID <= 0 {
 		zap.L().Error("chatwoot: ID de contato inválido retornado pela API",
 			zap.Int("contactId", contactID),
@@ -464,7 +675,6 @@ func (c *ChatwootService) findOrReopenConversation(ctx context.Context, contactI
 		return 0, nil
 	}
 
-	// Vamos pegar a conversa mais recente da inbox
 	for _, conv := range result.Payload {
 		if conv.InboxID != c.config.InboxID {
 			continue
@@ -474,7 +684,6 @@ func (c *ChatwootService) findOrReopenConversation(ctx context.Context, contactI
 			zap.Int("conversationId", conv.ID),
 			zap.String("status", conv.Status))
 
-		// Se estiver resolvida → reabre
 		if conv.Status == "resolved" {
 			zap.L().Info("chatwoot: ♻️ reabrindo conversa resolvida",
 				zap.Int("conversationId", conv.ID))
@@ -558,11 +767,9 @@ func (c *ChatwootService) createConversation(ctx context.Context, contactID int)
 
 // ── Envio de mensagens ────────────────────────────────────────────────────────
 
-// CORRIGIDO: Adiciona parâmetro isFromMe para determinar o tipo de mensagem
 func (c *ChatwootService) sendMessage(ctx context.Context, conversationID int, content, messageID string, isFromMe bool) error {
 	sourceID := fmt.Sprintf("WAID:%s", messageID)
 
-	// CORRIGIDO: Define o tipo correto baseado na origem
 	messageType := "incoming"
 	if isFromMe {
 		messageType = "outgoing"
@@ -575,7 +782,6 @@ func (c *ChatwootService) sendMessage(ctx context.Context, conversationID int, c
 		zap.Int("contentLength", len(content)),
 		zap.String("messageType", messageType))
 
-	// Verifica se a mensagem já existe
 	exists, err := c.checkMessageExists(ctx, conversationID, sourceID)
 	if err != nil {
 		zap.L().Warn("chatwoot: erro ao verificar duplicata, continuando envio", zap.Error(err))
@@ -623,7 +829,6 @@ func (c *ChatwootService) sendMessage(ctx context.Context, conversationID int, c
 	return nil
 }
 
-// CORRIGIDO: Adiciona parâmetro isFromMe
 func (c *ChatwootService) sendMediaMessage(
 	ctx context.Context,
 	conversationID int,
@@ -633,7 +838,6 @@ func (c *ChatwootService) sendMediaMessage(
 ) error {
 	sourceID := fmt.Sprintf("WAID:%s", messageID)
 
-	// CORRIGIDO: Define o tipo correto baseado na origem
 	messageType := "incoming"
 	if isFromMe {
 		messageType = "outgoing"
@@ -648,7 +852,6 @@ func (c *ChatwootService) sendMediaMessage(
 		zap.Int("mediaSize", len(mediaBytes)),
 		zap.String("messageType", messageType))
 
-	// Verifica se a mensagem já existe
 	exists, err := c.checkMessageExists(ctx, conversationID, sourceID)
 	if err != nil {
 		zap.L().Warn("chatwoot: erro ao verificar duplicata, continuando envio", zap.Error(err))
@@ -675,7 +878,6 @@ func (c *ChatwootService) sendMediaMessage(
 		_ = writer.WriteField("content", caption)
 	}
 
-	// Content-Type explícito para o Chatwoot renderizar corretamente
 	h := make(textproto.MIMEHeader)
 	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="attachments[]"; filename="%s"`, filename))
 	h.Set("Content-Type", mimetype)
@@ -753,7 +955,6 @@ func extractPhone(remoteJid string) string {
 	return strings.Split(parts[0], ":")[0]
 }
 
-// extractMediaMeta retorna filename, caption e mimetype limpos baseado no tipo da mensagem
 func extractMediaMeta(data *WookMessageData) (filename, caption, mimetype string) {
 	if data.Message == nil {
 		return "file.bin", "", "application/octet-stream"
@@ -767,7 +968,6 @@ func extractMediaMeta(data *WookMessageData) (filename, caption, mimetype string
 
 	switch {
 	case msg.AudioMessage != nil:
-		// PTT do WhatsApp vem como "audio/ogg; codecs=opus" — limpa para o Chatwoot
 		raw := msg.AudioMessage.Mimetype
 		if strings.Contains(raw, "ogg") {
 			mimetype = "audio/ogg"
@@ -800,30 +1000,27 @@ func extractMediaMeta(data *WookMessageData) (filename, caption, mimetype string
 			filename = fmt.Sprintf("%s.%s", id, ext)
 		}
 		caption = msg.DocumentMessage.Caption
+
 	case msg.StickerMessage != nil:
 		mimetype = cleanMimetype(msg.StickerMessage.Mimetype, "image/webp")
-
-	// Sticker SEMPRE é webp no WhatsApp
 		if mimetype == "" || mimetype == "application/octet-stream" {
 			mimetype = "image/webp"
 		}
-
 		filename = fmt.Sprintf("%s.webp", id)
 		caption = ""
+
 	default:
 		filename = fmt.Sprintf("%s.bin", id)
 		mimetype = "application/octet-stream"
 	}
 
-		return filename, caption, mimetype
+	return filename, caption, mimetype
 }
 
-// cleanMimetype remove parâmetros extras como "; codecs=opus" e retorna fallback se vazio
 func cleanMimetype(raw, fallback string) string {
 	if raw == "" {
 		return fallback
 	}
-	// Remove parâmetros: "image/jpeg; something" → "image/jpeg"
 	parts := strings.SplitN(raw, ";", 2)
 	clean := strings.TrimSpace(parts[0])
 	if clean == "" {
@@ -832,7 +1029,6 @@ func cleanMimetype(raw, fallback string) string {
 	return clean
 }
 
-// mimetypeToExt retorna extensão simples baseada no mimetype
 func mimetypeToExt(mimetype, fallback string) string {
 	switch mimetype {
 	case "image/jpeg":
@@ -886,7 +1082,6 @@ func extractMessageText(data *WookMessageData) string {
 		nome := msg.ContactMessage.DisplayName
 		vcard := msg.ContactMessage.VCard
 
-		// Regex para pegar o waid (telefone puro)
 		re := regexp.MustCompile(`waid=(\d+)`)
 		match := re.FindStringSubmatch(vcard)
 
@@ -898,21 +1093,21 @@ func extractMessageText(data *WookMessageData) string {
 		return fmt.Sprintf("Contato:\nNome: %s\nTelefone: %s", nome, telefone)
 	}
 	if msg.LocationMessage != nil {
-	nome := msg.LocationMessage.Name
-	endereco := msg.LocationMessage.Address
-	lat := msg.LocationMessage.DegreesLatitude
-	lng := msg.LocationMessage.DegreesLongitude
+		nome := msg.LocationMessage.Name
+		endereco := msg.LocationMessage.Address
+		lat := msg.LocationMessage.DegreesLatitude
+		lng := msg.LocationMessage.DegreesLongitude
 
-	link := fmt.Sprintf("https://www.google.com/maps?q=%f,%f", lat, lng)
+		link := fmt.Sprintf("https://www.google.com/maps?q=%f,%f", lat, lng)
 
-	return fmt.Sprintf(
-		"📍 *Localização*\n\n*Nome:* %s\n*Endereço:* %s\n*Latitude:* %.6f\n*Longitude:* %.6f\n\n🌎 *Mapa:* %s",
-		nome,
-		endereco,
-		lat,
-		lng,
-		link,
-	)
+		return fmt.Sprintf(
+			"📍 *Localização*\n\n*Nome:* %s\n*Endereço:* %s\n*Latitude:* %.6f\n*Longitude:* %.6f\n\n🌎 *Mapa:* %s",
+			nome,
+			endereco,
+			lat,
+			lng,
+			link,
+		)
 	}
 	if msg.StickerMessage != nil {
 		if msg.StickerMessage.IsAnimated {
