@@ -1212,7 +1212,7 @@ func (c *ChatwootService) findMessageInternalID(ctx context.Context, conversatio
 		return 0, fmt.Errorf("banco não conectado")
 	}
 
-	sourceID := fmt.Sprintf("WAID:%s", msgID)
+	sourceID := msgID
 	query := `SELECT id FROM messages WHERE conversation_id = $1 AND source_id = $2 LIMIT 1`
 
 	var id int
