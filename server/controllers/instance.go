@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"github.com/verbeux-ai/whatsmiau/lib/whatsmiau"
 	"github.com/verbeux-ai/whatsmiau/models"
-
+	"github.com/verbeux-ai/whatsmiau/env"
 	"github.com/go-playground/validator/v10"
 	"github.com/labstack/echo/v4"
 	"github.com/skip2/go-qrcode"
