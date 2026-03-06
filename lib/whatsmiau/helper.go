@@ -373,13 +373,3 @@ func configProxy(client *whatsmeow.Client, instanceProxy models.InstanceProxy) {
 		zap.L().Error("failed to set proxy address", zap.Error(err), zap.Any("instanceProxy", instanceProxy), zap.Any("jid", jid))
 	}
 }
-
-func mountProxyUrl(proxy models.InstanceProxy) string {
-	return fmt.Sprintf("%s://%s:%s@%s:%s", proxy.ProxyProtocol, proxy.ProxyUsername, proxy.ProxyPassword, proxy.ProxyHost, proxy.ProxyPort)
-}
-func (e *E) GetServerURL() string {
-    if e.ServerPort == "" || e.ServerPort == "80" || e.ServerPort == "443" {
-        return e.ServerURL
-    }
-    return fmt.Sprintf("%s:%s", e.ServerURL, e.ServerPort)
-}
