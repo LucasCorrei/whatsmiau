@@ -121,6 +121,16 @@ func (c *ChatwootService) IsEnabled() bool {
 		c.config.AccountID != ""
 }
 
+func (c *ChatwootService) InitInstance() error {
+    if !c.IsEnabled() {
+        zap.L().Info("chatwoot: InitInstance ignorado - serviço desabilitado")
+        return nil
+    }
+
+    zap.L().Info("chatwoot: InitInstance chamado")
+    return nil
+}
+
 // ── Tipos de resposta da API ──────────────────────────────────────────────────
 
 type chatwootContact struct {
