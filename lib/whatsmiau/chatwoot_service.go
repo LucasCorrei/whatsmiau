@@ -556,13 +556,22 @@ func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMess
 		return
 	}
 
-	// Reactions vindas do WhatsApp são ignoradas — o Chatwoot não tem API nativa
-	// para aplicar reactions em mensagens existentes, e enviar como texto causaria
-	// um loop: Chatwoot recebe "[Reação: 😂]", dispara webhook, controller tenta
-	// enviar de volta ao WhatsApp como mensagem de texto.
+	// Reactions do WhatsApp: envia como reply no Chatwoot apontando para a mensagem original.
+	// Usa content_attributes.in_reply_to com o ID interno da mensagem no Chatwoot,
+	// buscado via SQL pelo source_id = WAID:{reactionKey.Id}.
 	if msg.ReactionMessage != nil {
-		zap.L().Debug("chatwoot: reaction do WhatsApp ignorada",
-			zap.String("emoji", msg.ReactionMessage.Text))
+		emoji := msg.ReactionMessage.Text
+		if emoji == "" {
+			// Reaction vazia = remoção de reaction, ignorar
+			return
+		}
+		var originalMsgID string
+		if msg.ReactionMessage.Key != nil {
+			originalMsgID = msg.ReactionMessage.Key.Id
+		}
+		if err := c.sendReactionAsReply(ctx, conversationID, emoji, originalMsgID, messageID, isFromMe); err != nil {
+			zap.L().Error("chatwoot: erro ao enviar reaction como reply", zap.Error(err))
+		}
 		return
 	}
 
@@ -1132,6 +1141,87 @@ func (c *ChatwootService) sendMessage(ctx context.Context, conversationID int, c
 		zap.String("messageType", messageType))
 
 	return nil
+}
+
+// sendReactionAsReply envia uma reaction do WhatsApp como mensagem reply no Chatwoot.
+// Busca o ID interno da mensagem original via SQL (source_id = 'WAID:{originalMsgID}')
+// e envia o emoji com content_attributes.in_reply_to apontando para ela.
+func (c *ChatwootService) sendReactionAsReply(ctx context.Context, conversationID int, emoji, originalMsgID, reactionMsgID string, isFromMe bool) error {
+	sourceID := fmt.Sprintf("WAID:%s", reactionMsgID)
+
+	messageType := "incoming"
+	if isFromMe {
+		messageType = "outgoing"
+	}
+
+	// Evita duplicata
+	exists, err := c.checkMessageExists(ctx, conversationID, sourceID)
+	if err != nil {
+		zap.L().Warn("chatwoot: erro ao verificar duplicata de reaction", zap.Error(err))
+	} else if exists {
+		return nil
+	}
+
+	body := map[string]interface{}{
+		"content":      emoji,
+		"message_type": messageType,
+		"private":      false,
+		"source_id":    sourceID,
+	}
+
+	// Se temos o ID da mensagem original, busca o ID interno no Chatwoot e faz reply
+	if originalMsgID != "" {
+		internalID, err := c.findMessageInternalID(ctx, conversationID, originalMsgID)
+		if err != nil {
+			zap.L().Warn("chatwoot: não foi possível encontrar mensagem original para reply de reaction",
+				zap.String("originalMsgID", originalMsgID),
+				zap.Error(err))
+		} else if internalID > 0 {
+			body["content_attributes"] = map[string]interface{}{
+				"in_reply_to": internalID,
+			}
+		}
+	}
+
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
+		c.config.URL, c.config.AccountID, conversationID)
+
+	resp, err := c.doRequest(ctx, "POST", url, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("chatwoot erro %d: %s", resp.StatusCode, string(raw))
+	}
+
+	zap.L().Info("chatwoot: ✅ reaction enviada como reply",
+		zap.String("emoji", emoji),
+		zap.String("originalMsgID", originalMsgID),
+		zap.Int("conversationId", conversationID))
+
+	return nil
+}
+
+// findMessageInternalID busca o ID interno do Chatwoot de uma mensagem pelo WAID,
+// usando SQL direto no PostgreSQL: source_id = 'WAID:{msgID}'.
+func (c *ChatwootService) findMessageInternalID(ctx context.Context, conversationID int, msgID string) (int, error) {
+	if c.db == nil {
+		return 0, fmt.Errorf("banco não conectado")
+	}
+
+	sourceID := fmt.Sprintf("WAID:%s", msgID)
+	query := `SELECT id FROM messages WHERE conversation_id = $1 AND source_id = $2 LIMIT 1`
+
+	var id int
+	err := c.db.QueryRowContext(ctx, query, conversationID, sourceID).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("mensagem não encontrada: source_id=%s: %w", sourceID, err)
+	}
+
+	return id, nil
 }
 
 func (c *ChatwootService) sendMediaMessage(
