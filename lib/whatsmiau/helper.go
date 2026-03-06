@@ -373,3 +373,7 @@ func configProxy(client *whatsmeow.Client, instanceProxy models.InstanceProxy) {
 		zap.L().Error("failed to set proxy address", zap.Error(err), zap.Any("instanceProxy", instanceProxy), zap.Any("jid", jid))
 	}
 }
+
+func mountProxyUrl(proxy models.InstanceProxy) string {
+	return fmt.Sprintf("%s://%s:%s@%s:%s", proxy.ProxyProtocol, proxy.ProxyUsername, proxy.ProxyPassword, proxy.ProxyHost, proxy.ProxyPort)
+}
