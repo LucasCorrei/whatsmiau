@@ -121,14 +121,64 @@ func (c *ChatwootService) IsEnabled() bool {
 		c.config.AccountID != ""
 }
 
-func (c *ChatwootService) InitInstance() error {
+// InitInstance creates a WhatsApp inbox in Chatwoot and registers the webhook.
+// Returns the created inbox ID.
+func (c *ChatwootService) InitInstance(ctx context.Context, inboxName, webhookURL, organization, logo string) (int, error) {
     if !c.IsEnabled() {
         zap.L().Info("chatwoot: InitInstance ignorado - serviço desabilitado")
-        return nil
+        return 0, nil
     }
 
-    zap.L().Info("chatwoot: InitInstance chamado")
-    return nil
+    zap.L().Info("chatwoot: criando inbox",
+        zap.String("inboxName", inboxName),
+        zap.String("webhookURL", webhookURL),
+    )
+
+    // Step 1: Create the inbox
+    url := fmt.Sprintf("%s/api/v1/accounts/%s/inboxes", c.config.URL, c.config.AccountID)
+
+    body := map[string]interface{}{
+        "name":    inboxName,
+        "channel": map[string]interface{}{
+            "type":             "api",
+            "webhook_url":      webhookURL,
+        },
+    }
+    if organization != "" {
+        body["organization"] = organization
+    }
+    if logo != "" {
+        body["avatar_url"] = logo
+    }
+
+    resp, err := c.doRequest(ctx, "POST", url, body)
+    if err != nil {
+        return 0, fmt.Errorf("chatwoot: erro ao criar inbox: %w", err)
+    }
+    defer resp.Body.Close()
+
+    raw, _ := io.ReadAll(resp.Body)
+    if resp.StatusCode >= 300 {
+        return 0, fmt.Errorf("chatwoot: erro ao criar inbox (%d): %s", resp.StatusCode, string(raw))
+    }
+
+    var result struct {
+        ID int `json:"id"`
+    }
+    if err := json.Unmarshal(raw, &result); err != nil {
+        return 0, fmt.Errorf("chatwoot: erro ao decodificar resposta da inbox: %w", err)
+    }
+
+    if result.ID <= 0 {
+        return 0, fmt.Errorf("chatwoot: inbox criada mas ID inválido: %s", string(raw))
+    }
+
+    zap.L().Info("chatwoot: ✅ inbox criada com sucesso",
+        zap.Int("inboxId", result.ID),
+        zap.String("inboxName", inboxName),
+    )
+
+    return result.ID, nil
 }
 
 // ── Tipos de resposta da API ──────────────────────────────────────────────────
