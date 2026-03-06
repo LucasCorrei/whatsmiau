@@ -50,8 +50,8 @@ func NewChatwootService(config ChatwootConfig) *ChatwootService {
 	}
 
 	// Se o Chatwoot não está habilitado, retorna sem inicializar nada
-	if !c.config.Enabled {
-		zap.L().Info("chatwoot: serviço desabilitado via CHATWOOT_ENABLED=false")
+	if !service.IsEnabled() {
+		zap.L().Info("chatwoot: serviço desabilitado (config incompleta)")
 		return service
 	}
 
@@ -153,7 +153,7 @@ type chatwootConversationCreateResponse struct {
 
 func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 	// Verifica se está habilitado
-	if !c.config.Enabled {
+	if !c.IsEnabled() {
 		return
 	}
 
