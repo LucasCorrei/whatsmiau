@@ -11,19 +11,15 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
-	"strings"
-	"time"
 	"regexp"
+	"strings"
+	"sync"
+	"time"
+
 	_ "github.com/lib/pq"
 	"github.com/verbeux-ai/whatsmiau/env"
 	"go.uber.org/zap"
 )
-type Contact struct {
-	ID int `json:"id"`
-	Name string `json:"name"`
-	PhoneNumber string `json:"phone_number"`
-	Identifier string `json:"identifier"`
-}
 
 type ChatwootConfig struct {
 	URL       string
@@ -37,21 +33,24 @@ type ChatwootService struct {
 	httpClient *http.Client
 	db         *sql.DB
 
-	contactCache map[string]int
+	// label aplicada aos contatos (nome da inbox / instanceID)
+	labelName string
+
+	// cache de inboxID por nome de instância
+	inboxCache   map[string]int
+	inboxCacheMu sync.RWMutex
 }
 
 func NewChatwootService(config ChatwootConfig) *ChatwootService {
 	service := &ChatwootService{
-		config: config,
-		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
-		},
-		contactCache: make(map[string]int),
+		config:     config,
+		httpClient: &http.Client{Timeout: 15 * time.Second},
+		inboxCache: make(map[string]int),
 	}
 
 	// Se o Chatwoot não está habilitado, retorna sem inicializar nada
-	if !service.IsEnabled() {
-		zap.L().Info("chatwoot: serviço desabilitado (config incompleta)")
+	if config.URL == "" || config.Token == "" || config.AccountID == "" {
+		zap.L().Info("chatwoot: desabilitado para esta instância (config incompleta)")
 		return service
 	}
 
@@ -66,30 +65,26 @@ func NewChatwootService(config ChatwootConfig) *ChatwootService {
 		if err != nil {
 			zap.L().Error("chatwoot: erro ao conectar no PostgreSQL", zap.Error(err))
 		} else {
-			// Configura pool de conexões
 			db.SetMaxOpenConns(10)
 			db.SetMaxIdleConns(5)
 			db.SetConnMaxLifetime(time.Hour)
 
-			// Testa a conexão
 			if err := db.Ping(); err != nil {
 				zap.L().Error("chatwoot: erro ao pingar PostgreSQL", zap.Error(err))
 				db.Close()
 			} else {
 				service.db = db
-				zap.L().Info("chatwoot: ✅ CONECTADO ao PostgreSQL para verificação de duplicatas")
+				zap.L().Info("chatwoot: ✅ CONECTADO ao PostgreSQL para verificação de duplicatas e labels")
 			}
 		}
 	} else {
-		zap.L().Warn("chatwoot: ⚠️ CHATWOOT_IMPORT_DATABASE_CONNECTION_URI não configurado, verificação de duplicatas DESABILITADA")
+		zap.L().Warn("chatwoot: ⚠️ CHATWOOT_IMPORT_DATABASE_CONNECTION_URI não configurado, verificação de duplicatas e labels DESABILITADA")
 	}
 
 	return service
 }
 
-// maskPassword mascara a senha na URI do PostgreSQL para logs
 func maskPassword(uri string) string {
-	// postgres://user:password@host:port/db -> postgres://user:***@host:port/db
 	if strings.Contains(uri, "@") && strings.Contains(uri, "://") {
 		parts := strings.Split(uri, "://")
 		if len(parts) == 2 {
@@ -106,7 +101,6 @@ func maskPassword(uri string) string {
 	return uri
 }
 
-// Close fecha a conexão com o banco de dados
 func (c *ChatwootService) Close() error {
 	if c.db != nil {
 		zap.L().Info("chatwoot: fechando conexão com PostgreSQL")
@@ -121,79 +115,71 @@ func (c *ChatwootService) IsEnabled() bool {
 		c.config.AccountID != ""
 }
 
-// InitInstance creates a WhatsApp inbox in Chatwoot and registers the webhook.
-// Returns the created inbox ID.
-func (c *ChatwootService) InitInstance(ctx context.Context, inboxName, webhookURL, organization, logo string) (int, error) {
-    if !c.IsEnabled() {
-        zap.L().Info("chatwoot: InitInstance ignorado - serviço desabilitado")
-        return 0, nil
-    }
+// getInboxIDForInstance retorna o inboxID para uma instância usando cache em memória.
+// Se não estiver em cache, busca na API pelo nome da instância (que é o instanceID).
+func (c *ChatwootService) getInboxIDForInstance(ctx context.Context, instanceID string) (int, error) {
+	c.inboxCacheMu.RLock()
+	if id, ok := c.inboxCache[instanceID]; ok {
+		c.inboxCacheMu.RUnlock()
+		return id, nil
+	}
+	c.inboxCacheMu.RUnlock()
 
-    zap.L().Info("chatwoot: criando inbox",
-        zap.String("inboxName", inboxName),
-        zap.String("webhookURL", webhookURL),
-    )
+	zap.L().Info("chatwoot: 🔍 buscando inboxID para instância na API", zap.String("instanceID", instanceID))
 
-    // Step 1: Create the inbox
-    url := fmt.Sprintf("%s/api/v1/accounts/%s/inboxes", c.config.URL, c.config.AccountID)
+	id, err := c.findInboxByName(ctx, instanceID)
+	if err != nil {
+		return 0, err
+	}
+	if id <= 0 {
+		return 0, fmt.Errorf("inbox não encontrada para instância '%s' — verifique se a instância foi criada corretamente", instanceID)
+	}
 
-    body := map[string]interface{}{
-        "name":    inboxName,
-        "channel": map[string]interface{}{
-            "type":             "api",
-            "webhook_url":      webhookURL,
-        },
-    }
-    if organization != "" {
-        body["organization"] = organization
-    }
-    if logo != "" {
-        body["avatar_url"] = logo
-    }
+	c.inboxCacheMu.Lock()
+	c.inboxCache[instanceID] = id
+	c.inboxCacheMu.Unlock()
 
-    resp, err := c.doRequest(ctx, "POST", url, body)
-    if err != nil {
-        return 0, fmt.Errorf("chatwoot: erro ao criar inbox: %w", err)
-    }
-    defer resp.Body.Close()
+	zap.L().Info("chatwoot: ✅ inboxID resolvido e cacheado",
+		zap.String("instanceID", instanceID),
+		zap.Int("inboxId", id))
 
-    raw, _ := io.ReadAll(resp.Body)
-    if resp.StatusCode >= 300 {
-        return 0, fmt.Errorf("chatwoot: erro ao criar inbox (%d): %s", resp.StatusCode, string(raw))
-    }
+	return id, nil
+}
 
-    var result struct {
-        ID int `json:"id"`
-    }
-    if err := json.Unmarshal(raw, &result); err != nil {
-        return 0, fmt.Errorf("chatwoot: erro ao decodificar resposta da inbox: %w", err)
-    }
+func (c *ChatwootService) findInboxByName(ctx context.Context, name string) (int, error) {
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/inboxes", c.config.URL, c.config.AccountID)
 
-    if result.ID <= 0 {
-        return 0, fmt.Errorf("chatwoot: inbox criada mas ID inválido: %s", string(raw))
-    }
+	resp, err := c.doRequest(ctx, "GET", url, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
 
-    zap.L().Info("chatwoot: ✅ inbox criada com sucesso",
-        zap.Int("inboxId", result.ID),
-        zap.String("inboxName", inboxName),
-    )
+	var listResp chatwootInboxListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+		return 0, fmt.Errorf("erro ao decodificar lista de inboxes: %w", err)
+	}
 
-    return result.ID, nil
+	for _, inbox := range listResp.Payload {
+		if inbox.Name == name {
+			return inbox.ID, nil
+		}
+	}
+
+	return 0, nil
 }
 
 // ── Tipos de resposta da API ──────────────────────────────────────────────────
 
 type chatwootContact struct {
-	ID int `json:"id"`
+	ID          int    `json:"id"`
+	PhoneNumber string `json:"phone_number"`
 }
 
 type chatwootContactFilterResponse struct {
-	Payload []struct {
-		ID int `json:"id"`
-	} `json:"payload"`
+	Payload []chatwootContact `json:"payload"`
 }
 
-// CORRIGIDO: A API retorna o contato diretamente em payload, não em payload.contact
 type chatwootContactCreateResponse struct {
 	Payload chatwootContact `json:"payload"`
 }
@@ -212,10 +198,225 @@ type chatwootConversationCreateResponse struct {
 	ID int `json:"id"`
 }
 
+type chatwootInbox struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+type chatwootInboxListResponse struct {
+	Payload []chatwootInbox `json:"payload"`
+}
+
+type chatwootInboxCreateResponse struct {
+	ID int `json:"id"`
+}
+
+// ── Init Instance ─────────────────────────────────────────────────────────────
+
+func (c *ChatwootService) InitInstance(ctx context.Context, inboxName, webhookURL, organization, logo string) (int, error) {
+	if !c.IsEnabled() {
+		return 0, fmt.Errorf("chatwoot não está habilitado")
+	}
+
+	zap.L().Info("chatwoot: 🚀 inicializando instância",
+		zap.String("inboxName", inboxName),
+		zap.String("webhookURL", webhookURL))
+
+	inboxID, err := c.findOrCreateInbox(ctx, inboxName, webhookURL)
+	if err != nil {
+		return 0, fmt.Errorf("erro ao buscar/criar inbox: %w", err)
+	}
+
+	zap.L().Info("chatwoot: ✅ inbox pronta", zap.Int("inboxId", inboxID))
+
+	// Popula o cache imediatamente para o HandleMessage não precisar buscar na API
+	c.inboxCacheMu.Lock()
+	c.inboxCache[inboxName] = inboxID
+	c.inboxCacheMu.Unlock()
+
+	// Guarda o nome da inbox para usar como label nos contatos
+	c.labelName = inboxName
+
+	orgName := organization
+	if orgName == "" {
+		orgName = "WhatsMiau"
+	}
+	logoURL := logo
+	if logoURL == "" {
+		logoURL = "https://evolution-api.com/files/evolution-api-favicon.png"
+	}
+
+	botContactID, err := c.findOrCreateBotContact(ctx, inboxID, orgName, logoURL)
+	if err != nil {
+		zap.L().Warn("chatwoot: erro ao criar contato bot (não crítico)", zap.Error(err))
+	} else {
+		zap.L().Info("chatwoot: ✅ contato bot pronto", zap.Int("contactId", botContactID))
+
+		if botContactID > 0 {
+			if err := c.createBotConversation(ctx, botContactID, inboxID); err != nil {
+				zap.L().Warn("chatwoot: erro ao criar conversa bot (não crítico)", zap.Error(err))
+			}
+		}
+	}
+
+	return inboxID, nil
+}
+
+func (c *ChatwootService) findOrCreateInbox(ctx context.Context, inboxName, webhookURL string) (int, error) {
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/inboxes", c.config.URL, c.config.AccountID)
+
+	resp, err := c.doRequest(ctx, "GET", url, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	var listResp chatwootInboxListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+		return 0, fmt.Errorf("erro ao decodificar lista de inboxes: %w", err)
+	}
+
+	for _, inbox := range listResp.Payload {
+		if inbox.Name == inboxName {
+			zap.L().Info("chatwoot: inbox já existe",
+				zap.String("name", inboxName),
+				zap.Int("id", inbox.ID))
+			return inbox.ID, nil
+		}
+	}
+
+	zap.L().Info("chatwoot: criando nova inbox", zap.String("name", inboxName))
+	return c.createInbox(ctx, inboxName, webhookURL)
+}
+
+func (c *ChatwootService) createInbox(ctx context.Context, name, webhookURL string) (int, error) {
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/inboxes", c.config.URL, c.config.AccountID)
+	body := map[string]interface{}{
+		"name": name,
+		"channel": map[string]interface{}{
+			"type":        "api",
+			"webhook_url": webhookURL,
+		},
+	}
+
+	resp, err := c.doRequest(ctx, "POST", url, body)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		return 0, fmt.Errorf("erro ao criar inbox: %d - %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var result chatwootInboxCreateResponse
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return 0, fmt.Errorf("erro ao decodificar resposta de criar inbox: %w", err)
+	}
+
+	if result.ID <= 0 {
+		return 0, fmt.Errorf("inbox criada com ID inválido: %s", string(bodyBytes))
+	}
+
+	zap.L().Info("chatwoot: ✅ inbox criada", zap.Int("inboxId", result.ID))
+	return result.ID, nil
+}
+
+func (c *ChatwootService) findOrCreateBotContact(ctx context.Context, inboxID int, orgName, logoURL string) (int, error) {
+	id, err := c.searchContactByPhone(ctx, "123456")
+	if err == nil && id > 0 {
+		zap.L().Info("chatwoot: contato bot já existe", zap.Int("contactId", id))
+		return id, nil
+	}
+
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts", c.config.URL, c.config.AccountID)
+	body := map[string]interface{}{
+		"name":         orgName,
+		"phone_number": "+123456",
+		"avatar_url":   logoURL,
+		"inbox_id":     inboxID,
+	}
+
+	resp, err := c.doRequest(ctx, "POST", url, body)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		return 0, fmt.Errorf("erro ao criar contato bot: %d - %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var result chatwootContactCreateResponse
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return 0, fmt.Errorf("erro ao decodificar contato bot: %w", err)
+	}
+
+	if result.Payload.ID <= 0 {
+		return 0, fmt.Errorf("contato bot criado com ID inválido")
+	}
+
+	zap.L().Info("chatwoot: ✅ contato bot criado", zap.Int("contactId", result.Payload.ID))
+	return result.Payload.ID, nil
+}
+
+func (c *ChatwootService) createBotConversation(ctx context.Context, contactID, inboxID int) error {
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations", c.config.URL, c.config.AccountID)
+	body := map[string]interface{}{
+		"contact_id": fmt.Sprintf("%d", contactID),
+		"inbox_id":   fmt.Sprintf("%d", inboxID),
+	}
+
+	resp, err := c.doRequest(ctx, "POST", url, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("erro ao criar conversa bot: %d - %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var conv chatwootConversationCreateResponse
+	if err := json.Unmarshal(bodyBytes, &conv); err != nil {
+		return fmt.Errorf("erro ao decodificar conversa bot: %w", err)
+	}
+
+	if conv.ID <= 0 {
+		return fmt.Errorf("conversa bot criada com ID inválido")
+	}
+
+	msgURL := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
+		c.config.URL, c.config.AccountID, conv.ID)
+	msgBody := map[string]interface{}{
+		"content":      "init",
+		"message_type": "outgoing",
+	}
+
+	msgResp, err := c.doRequest(ctx, "POST", msgURL, msgBody)
+	if err != nil {
+		return fmt.Errorf("erro ao enviar mensagem init: %w", err)
+	}
+	defer msgResp.Body.Close()
+
+	zap.L().Info("chatwoot: ✅ conversa bot criada e mensagem init enviada",
+		zap.Int("conversationId", conv.ID))
+
+	return nil
+}
+
 // ── Handler principal ─────────────────────────────────────────────────────────
 
-func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
-	// Verifica se está habilitado
+// HandleMessage processa uma mensagem e envia ao Chatwoot.
+// instanceID é o ID da instância WhatsMiau (ex: "VENDAS") — usado para
+// resolver dinamicamente qual inbox usar, via cache ou busca na API.
+func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMessageData) {
 	if !c.IsEnabled() {
 		return
 	}
@@ -224,16 +425,28 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 		return
 	}
 
-	// CORRIGIDO: Aceita tanto mensagens de entrada quanto de saída
-	// (para sincronizar mensagens enviadas diretamente do WhatsApp)
 	isFromMe := messageData.Key.FromMe
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// Garante que o labelName está preenchido com o instanceID
+	if c.labelName == "" {
+		c.labelName = instanceID
+	}
+
+	// Resolve o inboxID dinamicamente para esta instância (sem depender do env)
+	inboxID, err := c.getInboxIDForInstance(ctx, instanceID)
+	if err != nil {
+		zap.L().Error("chatwoot: inbox não encontrada, ignorando mensagem",
+			zap.String("instanceID", instanceID),
+			zap.Error(err))
+		return
+	}
+
 	remoteJid := messageData.Key.RemoteJid
 
-	phone := normalizePhone(extractPhone(remoteJid))
+	phone := extractPhone(remoteJid)
 	if phone == "" {
 		zap.L().Warn("chatwoot: número inválido", zap.String("remoteJid", remoteJid))
 		return
@@ -257,13 +470,13 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 		zap.String("pushName", pushName),
 		zap.String("type", messageType))
 
+	// Passa o remoteJid completo como identifier (ex: "5511999@s.whatsapp.net")
 	contactID, err := c.findOrCreateContact(ctx, phone, pushName, remoteJid)
 	if err != nil {
 		zap.L().Error("chatwoot: erro ao buscar/criar contato", zap.Error(err))
 		return
 	}
 
-	// CORRIGIDO: Verifica se o contactID é válido
 	if contactID <= 0 {
 		zap.L().Error("chatwoot: contactID inválido retornado",
 			zap.Int("contactId", contactID),
@@ -273,13 +486,12 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 
 	zap.L().Info("chatwoot: ✅ contato obtido", zap.Int("contactId", contactID))
 
-	conversationID, err := c.findOrCreateConversation(ctx, contactID)
+	conversationID, err := c.findOrCreateConversation(ctx, contactID, inboxID)
 	if err != nil {
 		zap.L().Error("chatwoot: erro ao buscar/criar conversa", zap.Error(err))
 		return
 	}
 
-	// CORRIGIDO: Verifica se o conversationID é válido
 	if conversationID <= 0 {
 		zap.L().Error("chatwoot: conversationID inválido retornado",
 			zap.Int("conversationId", conversationID),
@@ -294,7 +506,6 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 		return
 	}
 
-	// Mídia: usa Base64
 	if msg.Base64 != "" {
 		filename, caption, mimetype := extractMediaMeta(messageData)
 
@@ -320,7 +531,6 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 		return
 	}
 
-	// Texto
 	messageText := extractMessageText(messageData)
 	if messageText == "" {
 		zap.L().Warn("chatwoot: mensagem sem conteúdo, ignorando",
@@ -343,20 +553,11 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 // ── Verificação de duplicatas ─────────────────────────────────────────────────
 
 func (c *ChatwootService) checkMessageExists(ctx context.Context, conversationID int, sourceID string) (bool, error) {
-	zap.L().Info("chatwoot: 🔍 iniciando verificação de duplicata",
-		zap.Int("conversationId", conversationID),
-		zap.String("sourceId", sourceID),
-		zap.Bool("dbConnected", c.db != nil))
-
 	if c.db == nil {
-		zap.L().Warn("chatwoot: ⚠️ verificação de duplicata PULADA - banco de dados NÃO CONECTADO")
 		return false, nil
 	}
 
-	// Proteção adicional: se conversationID for 0 ou inválido, não verifica
 	if conversationID <= 0 {
-		zap.L().Warn("chatwoot: ⚠️ conversationID inválido, pulando verificação",
-			zap.Int("conversationId", conversationID))
 		return false, nil
 	}
 
@@ -368,28 +569,15 @@ func (c *ChatwootService) checkMessageExists(ctx context.Context, conversationID
 		LIMIT 1
 	`
 
-	zap.L().Info("chatwoot: 📊 executando query de verificação",
-		zap.Int("conversationId", conversationID),
-		zap.String("sourceId", sourceID))
-
 	var count int
 	err := c.db.QueryRowContext(ctx, query, conversationID, sourceID).Scan(&count)
 	if err != nil {
-		zap.L().Error("chatwoot: ❌ erro ao executar query de verificação",
-			zap.Error(err),
-			zap.Int("conversationId", conversationID),
-			zap.String("sourceId", sourceID))
 		return false, fmt.Errorf("erro ao verificar mensagem existente: %w", err)
 	}
 
 	exists := count > 0
 	if exists {
-		zap.L().Info("chatwoot: ✅ DUPLICATA DETECTADA - mensagem JÁ EXISTE",
-			zap.Int("count", count),
-			zap.String("sourceId", sourceID),
-			zap.Int("conversationId", conversationID))
-	} else {
-		zap.L().Info("chatwoot: ✅ mensagem NÃO EXISTE no banco, pode enviar",
+		zap.L().Info("chatwoot: 🚫 DUPLICATA DETECTADA",
 			zap.String("sourceId", sourceID),
 			zap.Int("conversationId", conversationID))
 	}
@@ -398,144 +586,287 @@ func (c *ChatwootService) checkMessageExists(ctx context.Context, conversationID
 }
 
 // ── Contatos ──────────────────────────────────────────────────────────────────
+
 func (c *ChatwootService) findOrCreateContact(ctx context.Context, phone, name, identifier string) (int, error) {
+	zap.L().Info("chatwoot: 🔍 buscando contato",
+		zap.String("phone", phone),
+		zap.String("name", name))
 
-	if id, ok := c.contactCache[phone]; ok {
-		zap.L().Info("chatwoot: contato vindo do cache",
-			zap.Int("contactId", id))
-		return id, nil
-	}
-
-	id, err := c.searchContact(ctx, phone)
+	contactID, err := c.searchContactByPhone(ctx, phone)
 	if err != nil {
 		return 0, err
 	}
-
-	if id > 0 {
-		c.contactCache[phone] = id
-		return id, nil
+	if contactID > 0 {
+		zap.L().Info("chatwoot: ✅ contato ENCONTRADO", zap.Int("contactId", contactID))
+		return contactID, nil
 	}
 
-	id, err = c.createContact(ctx, phone, name, identifier)
-	if err != nil {
-		return 0, err
-	}
-
-	c.contactCache[phone] = id
-
-	return id, nil
+	zap.L().Info("chatwoot: 📝 criando novo contato", zap.String("phone", phone))
+	return c.createContact(ctx, phone, name, identifier)
 }
 
-func (c *ChatwootService) searchContact(ctx context.Context, phone string) (int, error) {
-
-	// garante + apenas uma vez
-	if !strings.HasPrefix(phone, "+") {
-		phone = "+" + phone
+// getBrazilianPhoneVariants retorna variantes do número para Brasil (+55):
+// números com 9 dígito (14 chars com "+") geram versão sem o 9 e vice-versa.
+func getBrazilianPhoneVariants(phone string) []string {
+	numbers := []string{phone}
+	// phone aqui não tem "+", ex: "5511987654321" (13 chars) ou "551187654321" (12 chars)
+	if strings.HasPrefix(phone, "55") {
+		withPlus := "+" + phone
+		if len(withPlus) == 14 { // +55 + DDD(2) + 9(1) + número(8) = 14
+			withoutNine := withPlus[:5] + withPlus[6:]
+			numbers = append(numbers, strings.TrimPrefix(withoutNine, "+"))
+		} else if len(withPlus) == 13 { // +55 + DDD(2) + número(8) = 13
+			withNine := withPlus[:5] + "9" + withPlus[5:]
+			numbers = append(numbers, strings.TrimPrefix(withNine, "+"))
+		}
 	}
+	return numbers
+}
 
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/filter", c.config.URL, c.config.AccountID)
+// buildFilterPayload constrói o payload de filtro com variantes de número.
+// Os values são enviados SEM "+", espelhando o getFilterPayload do Evolution API.
+func buildFilterPayload(phone string) []map[string]interface{} {
+	numbers := getBrazilianPhoneVariants(phone)
+	payload := make([]map[string]interface{}, 0, len(numbers))
+	lastIdx := len(numbers) - 1
 
+	for i, number := range numbers {
+		var queryOperator interface{} = "OR"
+		if i == lastIdx {
+			queryOperator = nil
+		}
+		payload = append(payload, map[string]interface{}{
+			"attribute_key":   "phone_number",
+			"filter_operator": "equal_to",
+			"values":          []string{number}, // sem "+" — igual ao Evolution API
+			"query_operator":  queryOperator,
+		})
+	}
+	return payload
+}
+
+func (c *ChatwootService) searchContactByPhone(ctx context.Context, phone string) (int, error) {
+	filterURL := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/filter", c.config.URL, c.config.AccountID)
 	body := map[string]interface{}{
-		"payload": []map[string]interface{}{
-			{
-				"attribute_key":   "phone_number",
-				"filter_operator": "equal_to",
-				"values":          []string{phone},
-			},
-		},
+		"payload": buildFilterPayload(phone),
 	}
 
-	resp, err := c.doRequest(ctx, "POST", url, body)
+	resp, err := c.doRequest(ctx, "POST", filterURL, body)
 	if err != nil {
 		return 0, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 300 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return 0, fmt.Errorf("chatwoot search error: %s", string(bodyBytes))
-	}
+	bodyBytes, _ := io.ReadAll(resp.Body)
 
 	var result chatwootContactFilterResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, err
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return 0, fmt.Errorf("erro ao decodificar filtro de contatos: %w", err)
 	}
 
 	if len(result.Payload) == 0 {
 		return 0, nil
 	}
 
+	// Múltiplos resultados (ex: +55 com/sem 9): pega o de número mais longo
+	if len(result.Payload) > 1 {
+		return c.findBestContactMatch(result.Payload, phone), nil
+	}
+
 	return result.Payload[0].ID, nil
 }
 
-func (c *ChatwootService) createContact(ctx context.Context, phone, name, identifier string) (int, error) {
+// findBestContactMatch seleciona o contato cujo phone_number bate com a variante mais longa.
+func (c *ChatwootService) findBestContactMatch(contacts []chatwootContact, phone string) int {
+	variants := getBrazilianPhoneVariants(phone)
 
-	// garante + apenas uma vez
-	if !strings.HasPrefix(phone, "+") {
-		phone = "+" + phone
+	longestVariant := ""
+	for _, v := range variants {
+		if len(v) > len(longestVariant) {
+			longestVariant = v
+		}
 	}
 
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts", c.config.URL, c.config.AccountID)
+	for _, contact := range contacts {
+		if contact.PhoneNumber == "+"+longestVariant {
+			return contact.ID
+		}
+	}
 
+	return contacts[0].ID
+}
+
+// searchContactByIdentifier busca contato pelo remoteJid (identifier) via filtro.
+func (c *ChatwootService) searchContactByIdentifier(ctx context.Context, identifier string) (int, error) {
+	filterURL := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/filter", c.config.URL, c.config.AccountID)
 	body := map[string]interface{}{
-		"name":         name,
-		"phone_number": phone,
-		"identifier":   identifier,
+		"payload": []map[string]interface{}{
+			{
+				"attribute_key":   "identifier",
+				"filter_operator": "equal_to",
+				"values":          []string{identifier},
+				"query_operator":  nil,
+			},
+		},
 	}
 
-	resp, err := c.doRequest(ctx, "POST", url, body)
+	resp, err := c.doRequest(ctx, "POST", filterURL, body)
 	if err != nil {
 		return 0, err
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, fmt.Errorf("erro ao ler resposta: %w", err)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+
+	var result chatwootContactFilterResponse
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return 0, fmt.Errorf("erro ao decodificar filtro por identifier: %w", err)
 	}
 
-	if resp.StatusCode >= 300 {
-		return 0, fmt.Errorf("chatwoot create contact error: %s", string(bodyBytes))
+	if len(result.Payload) > 0 {
+		return result.Payload[0].ID, nil
 	}
+	return 0, nil
+}
+
+// searchContact mantido para compatibilidade com o bot contact (busca por "123456")
+func (c *ChatwootService) searchContact(ctx context.Context, phone string) (int, error) {
+	return c.searchContactByPhone(ctx, phone)
+}
+
+func (c *ChatwootService) createContact(ctx context.Context, phone, name, identifier string) (int, error) {
+	apiURL := fmt.Sprintf("%s/api/v1/accounts/%s/contacts", c.config.URL, c.config.AccountID)
+
+	isGroup := strings.Contains(identifier, "@g.us")
+
+	var body map[string]interface{}
+	if isGroup {
+		// Grupos: identifier é o próprio remoteJid do grupo, sem phone_number
+		body = map[string]interface{}{
+			"name":       name,
+			"identifier": phone, // para grupos usa o chatId sem "@g.us"
+		}
+	} else {
+		// Contatos individuais: phone_number com "+" e identifier = remoteJid
+		body = map[string]interface{}{
+			"name":       name,
+			"identifier": identifier,
+		}
+		// Inclui phone_number se o identifier contiver "@" (JID normal) ou se não tiver identifier
+		if strings.Contains(identifier, "@") || identifier == "" {
+			body["phone_number"] = fmt.Sprintf("+%s", phone)
+		}
+	}
+
+	resp, err := c.doRequest(ctx, "POST", apiURL, body)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
 
 	zap.L().Info("chatwoot: resposta bruta da criação de contato",
-		zap.String("response", string(bodyBytes)),
-	)
+		zap.String("response", string(bodyBytes)))
+
+	// HTTP 422 = conflito (contato já existe com esse identifier ou phone_number).
+	// Espelha o tratamento do Evolution API: tenta recuperar o contato existente.
+	if resp.StatusCode == 422 {
+		zap.L().Warn("chatwoot: criação retornou 422, buscando contato existente",
+			zap.String("identifier", identifier),
+			zap.String("phone", phone))
+
+		if identifier != "" {
+			existingID, err := c.searchContactByIdentifier(ctx, identifier)
+			if err == nil && existingID > 0 {
+				zap.L().Info("chatwoot: ✅ contato recuperado por identifier após 422", zap.Int("contactId", existingID))
+				_ = c.addLabelToContact(ctx, existingID)
+				return existingID, nil
+			}
+		}
+
+		// Fallback: busca pelo número
+		existingID, err := c.searchContactByPhone(ctx, phone)
+		if err == nil && existingID > 0 {
+			zap.L().Info("chatwoot: ✅ contato recuperado por phone após 422", zap.Int("contactId", existingID))
+			_ = c.addLabelToContact(ctx, existingID)
+			return existingID, nil
+		}
+
+		return 0, fmt.Errorf("contato já existe (422) mas não foi possível recuperá-lo: identifier=%s phone=%s", identifier, phone)
+	}
+
+	if resp.StatusCode >= 400 {
+		return 0, fmt.Errorf("erro ao criar contato: %d - %s", resp.StatusCode, string(bodyBytes))
+	}
 
 	var result chatwootContactCreateResponse
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
-
-		zap.L().Error("chatwoot: erro ao decodificar resposta",
+		zap.L().Error("chatwoot: erro ao decodificar resposta de criar contato",
 			zap.Error(err),
-			zap.String("response", string(bodyBytes)),
-		)
-
-		return 0, err
+			zap.String("response", string(bodyBytes)))
+		return 0, fmt.Errorf("erro ao decodificar resposta: %w", err)
 	}
 
 	contactID := result.Payload.ID
-
 	if contactID <= 0 {
-
-		zap.L().Error("chatwoot: ID inválido retornado",
+		zap.L().Error("chatwoot: ID de contato inválido retornado pela API",
 			zap.Int("contactId", contactID),
-			zap.String("response", string(bodyBytes)),
-		)
-
-		return 0, fmt.Errorf("chatwoot retornou contactId inválido")
+			zap.String("response", string(bodyBytes)))
+		return 0, fmt.Errorf("API retornou contactId inválido: %d", contactID)
 	}
 
-	zap.L().Info("chatwoot: ✅ contato criado",
-		zap.Int("contactId", contactID),
-		zap.String("phone", phone),
-	)
+	zap.L().Info("chatwoot: ✅ contato CRIADO", zap.Int("contactId", contactID))
+
+	// Aplica label com nome da inbox ao contato recém-criado
+	_ = c.addLabelToContact(ctx, contactID)
 
 	return contactID, nil
 }
 
+// addLabelToContact aplica a label com o nome da inbox ao contato via SQL direto,
+// espelhando o addLabelToContact do Evolution API.
+func (c *ChatwootService) addLabelToContact(ctx context.Context, contactID int) error {
+	if c.db == nil || c.labelName == "" {
+		return nil
+	}
+
+	// Upsert da tag (incrementa taggings_count)
+	sqlTag := `INSERT INTO tags (name, taggings_count)
+		VALUES ($1, 1)
+		ON CONFLICT (name)
+		DO UPDATE SET taggings_count = tags.taggings_count + 1
+		RETURNING id`
+
+	var tagID int
+	if err := c.db.QueryRowContext(ctx, sqlTag, c.labelName).Scan(&tagID); err != nil {
+		return fmt.Errorf("erro ao upsert tag: %w", err)
+	}
+
+	// Verifica se o tagging já existe antes de inserir
+	var exists int
+	sqlCheck := `SELECT 1 FROM taggings
+		WHERE tag_id = $1 AND taggable_type = 'Contact' AND taggable_id = $2 AND context = 'labels'
+		LIMIT 1`
+	_ = c.db.QueryRowContext(ctx, sqlCheck, tagID, contactID).Scan(&exists)
+
+	if exists == 0 {
+		sqlInsert := `INSERT INTO taggings (tag_id, taggable_type, taggable_id, context, created_at)
+			VALUES ($1, 'Contact', $2, 'labels', NOW())`
+		if _, err := c.db.ExecContext(ctx, sqlInsert, tagID, contactID); err != nil {
+			return fmt.Errorf("erro ao inserir tagging: %w", err)
+		}
+		zap.L().Info("chatwoot: ✅ label aplicada ao contato",
+			zap.String("label", c.labelName),
+			zap.Int("contactId", contactID))
+	}
+
+	return nil
+}
+
 // ── Conversas ─────────────────────────────────────────────────────────────────
 
-func (c *ChatwootService) findOrCreateConversation(ctx context.Context, contactID int) (int, error) {
+func (c *ChatwootService) findOrCreateConversation(ctx context.Context, contactID, inboxID int) (int, error) {
 	if contactID <= 0 {
 		return 0, fmt.Errorf("contactID inválido: %d", contactID)
 	}
@@ -543,7 +874,7 @@ func (c *ChatwootService) findOrCreateConversation(ctx context.Context, contactI
 	zap.L().Info("chatwoot: 🔍 buscando conversa existente",
 		zap.Int("contactId", contactID))
 
-	id, err := c.findOrReopenConversation(ctx, contactID)
+	id, err := c.findOrReopenConversation(ctx, contactID, inboxID)
 	if err != nil {
 		return 0, err
 	}
@@ -555,10 +886,10 @@ func (c *ChatwootService) findOrCreateConversation(ctx context.Context, contactI
 	zap.L().Info("chatwoot: 📝 criando nova conversa",
 		zap.Int("contactId", contactID))
 
-	return c.createConversation(ctx, contactID)
+	return c.createConversation(ctx, contactID, inboxID)
 }
 
-func (c *ChatwootService) findOrReopenConversation(ctx context.Context, contactID int) (int, error) {
+func (c *ChatwootService) findOrReopenConversation(ctx context.Context, contactID, inboxID int) (int, error) {
 	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/%d/conversations",
 		c.config.URL, c.config.AccountID, contactID)
 
@@ -577,9 +908,8 @@ func (c *ChatwootService) findOrReopenConversation(ctx context.Context, contactI
 		return 0, nil
 	}
 
-	// Vamos pegar a conversa mais recente da inbox
 	for _, conv := range result.Payload {
-		if conv.InboxID != c.config.InboxID {
+		if conv.InboxID != inboxID {
 			continue
 		}
 
@@ -587,14 +917,12 @@ func (c *ChatwootService) findOrReopenConversation(ctx context.Context, contactI
 			zap.Int("conversationId", conv.ID),
 			zap.String("status", conv.Status))
 
-		// Se estiver resolvida → reabre
 		if conv.Status == "resolved" {
 			zap.L().Info("chatwoot: ♻️ reabrindo conversa resolvida",
 				zap.Int("conversationId", conv.ID))
 
 			if err := c.reopenConversation(ctx, conv.ID); err != nil {
-				zap.L().Warn("chatwoot: erro ao reabrir conversa",
-					zap.Error(err))
+				zap.L().Warn("chatwoot: erro ao reabrir conversa", zap.Error(err))
 			}
 		}
 
@@ -624,25 +952,21 @@ func (c *ChatwootService) reopenConversation(ctx context.Context, conversationID
 
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("erro ao reabrir conversa: %d - %s",
-			resp.StatusCode,
-			string(raw))
+		return fmt.Errorf("erro ao reabrir conversa: %d - %s", resp.StatusCode, string(raw))
 	}
 
-	zap.L().Info("chatwoot: ✅ conversa reaberta",
-		zap.Int("conversationId", conversationID))
-
+	zap.L().Info("chatwoot: ✅ conversa reaberta", zap.Int("conversationId", conversationID))
 	return nil
 }
 
-func (c *ChatwootService) createConversation(ctx context.Context, contactID int) (int, error) {
+func (c *ChatwootService) createConversation(ctx context.Context, contactID, inboxID int) (int, error) {
 	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations",
 		c.config.URL,
 		c.config.AccountID)
 
 	body := map[string]interface{}{
 		"contact_id": contactID,
-		"inbox_id":   c.config.InboxID,
+		"inbox_id":   inboxID,
 	}
 
 	resp, err := c.doRequest(ctx, "POST", url, body)
@@ -653,9 +977,7 @@ func (c *ChatwootService) createConversation(ctx context.Context, contactID int)
 
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
-		return 0, fmt.Errorf("erro ao criar conversa: %d - %s",
-			resp.StatusCode,
-			string(raw))
+		return 0, fmt.Errorf("erro ao criar conversa: %d - %s", resp.StatusCode, string(raw))
 	}
 
 	var result chatwootConversationCreateResponse
@@ -671,24 +993,14 @@ func (c *ChatwootService) createConversation(ctx context.Context, contactID int)
 
 // ── Envio de mensagens ────────────────────────────────────────────────────────
 
-// CORRIGIDO: Adiciona parâmetro isFromMe para determinar o tipo de mensagem
 func (c *ChatwootService) sendMessage(ctx context.Context, conversationID int, content, messageID string, isFromMe bool) error {
 	sourceID := fmt.Sprintf("WAID:%s", messageID)
 
-	// CORRIGIDO: Define o tipo correto baseado na origem
 	messageType := "incoming"
 	if isFromMe {
 		messageType = "outgoing"
 	}
 
-	zap.L().Info("chatwoot: 📨 preparando para enviar mensagem de TEXTO",
-		zap.String("messageId", messageID),
-		zap.String("sourceId", sourceID),
-		zap.Int("conversationId", conversationID),
-		zap.Int("contentLength", len(content)),
-		zap.String("messageType", messageType))
-
-	// Verifica se a mensagem já existe
 	exists, err := c.checkMessageExists(ctx, conversationID, sourceID)
 	if err != nil {
 		zap.L().Warn("chatwoot: erro ao verificar duplicata, continuando envio", zap.Error(err))
@@ -698,11 +1010,6 @@ func (c *ChatwootService) sendMessage(ctx context.Context, conversationID int, c
 			zap.Int("conversationId", conversationID))
 		return nil
 	}
-
-	zap.L().Info("chatwoot: ➡️ enviando mensagem de texto para API",
-		zap.String("sourceId", sourceID),
-		zap.Int("conversationId", conversationID),
-		zap.String("messageType", messageType))
 
 	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
 		c.config.URL, c.config.AccountID, conversationID)
@@ -715,16 +1022,12 @@ func (c *ChatwootService) sendMessage(ctx context.Context, conversationID int, c
 
 	resp, err := c.doRequest(ctx, "POST", url, body)
 	if err != nil {
-		zap.L().Error("chatwoot: ❌ erro na requisição HTTP", zap.Error(err))
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
-		zap.L().Error("chatwoot: ❌ erro do servidor Chatwoot",
-			zap.Int("statusCode", resp.StatusCode),
-			zap.String("response", string(raw)))
 		return fmt.Errorf("chatwoot erro %d: %s", resp.StatusCode, string(raw))
 	}
 
@@ -736,7 +1039,6 @@ func (c *ChatwootService) sendMessage(ctx context.Context, conversationID int, c
 	return nil
 }
 
-// CORRIGIDO: Adiciona parâmetro isFromMe
 func (c *ChatwootService) sendMediaMessage(
 	ctx context.Context,
 	conversationID int,
@@ -746,22 +1048,11 @@ func (c *ChatwootService) sendMediaMessage(
 ) error {
 	sourceID := fmt.Sprintf("WAID:%s", messageID)
 
-	// CORRIGIDO: Define o tipo correto baseado na origem
 	messageType := "incoming"
 	if isFromMe {
 		messageType = "outgoing"
 	}
 
-	zap.L().Info("chatwoot: 📨 preparando para enviar MÍDIA",
-		zap.String("messageId", messageID),
-		zap.String("sourceId", sourceID),
-		zap.Int("conversationId", conversationID),
-		zap.String("filename", filename),
-		zap.String("mimetype", mimetype),
-		zap.Int("mediaSize", len(mediaBytes)),
-		zap.String("messageType", messageType))
-
-	// Verifica se a mensagem já existe
 	exists, err := c.checkMessageExists(ctx, conversationID, sourceID)
 	if err != nil {
 		zap.L().Warn("chatwoot: erro ao verificar duplicata, continuando envio", zap.Error(err))
@@ -771,11 +1062,6 @@ func (c *ChatwootService) sendMediaMessage(
 			zap.Int("conversationId", conversationID))
 		return nil
 	}
-
-	zap.L().Info("chatwoot: ➡️ enviando mídia para API",
-		zap.String("sourceId", sourceID),
-		zap.Int("conversationId", conversationID),
-		zap.String("messageType", messageType))
 
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
@@ -788,7 +1074,6 @@ func (c *ChatwootService) sendMediaMessage(
 		_ = writer.WriteField("content", caption)
 	}
 
-	// Content-Type explícito para o Chatwoot renderizar corretamente
 	h := make(textproto.MIMEHeader)
 	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="attachments[]"; filename="%s"`, filename))
 	h.Set("Content-Type", mimetype)
@@ -814,16 +1099,12 @@ func (c *ChatwootService) sendMediaMessage(
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		zap.L().Error("chatwoot: ❌ erro na requisição HTTP de mídia", zap.Error(err))
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
-		zap.L().Error("chatwoot: ❌ erro do servidor Chatwoot ao enviar mídia",
-			zap.Int("statusCode", resp.StatusCode),
-			zap.String("response", string(raw)))
 		return fmt.Errorf("chatwoot erro %d: %s", resp.StatusCode, string(raw))
 	}
 
@@ -866,7 +1147,6 @@ func extractPhone(remoteJid string) string {
 	return strings.Split(parts[0], ":")[0]
 }
 
-// extractMediaMeta retorna filename, caption e mimetype limpos baseado no tipo da mensagem
 func extractMediaMeta(data *WookMessageData) (filename, caption, mimetype string) {
 	if data.Message == nil {
 		return "file.bin", "", "application/octet-stream"
@@ -880,7 +1160,6 @@ func extractMediaMeta(data *WookMessageData) (filename, caption, mimetype string
 
 	switch {
 	case msg.AudioMessage != nil:
-		// PTT do WhatsApp vem como "audio/ogg; codecs=opus" — limpa para o Chatwoot
 		raw := msg.AudioMessage.Mimetype
 		if strings.Contains(raw, "ogg") {
 			mimetype = "audio/ogg"
@@ -913,30 +1192,27 @@ func extractMediaMeta(data *WookMessageData) (filename, caption, mimetype string
 			filename = fmt.Sprintf("%s.%s", id, ext)
 		}
 		caption = msg.DocumentMessage.Caption
+
 	case msg.StickerMessage != nil:
 		mimetype = cleanMimetype(msg.StickerMessage.Mimetype, "image/webp")
-
-	// Sticker SEMPRE é webp no WhatsApp
 		if mimetype == "" || mimetype == "application/octet-stream" {
 			mimetype = "image/webp"
 		}
-
 		filename = fmt.Sprintf("%s.webp", id)
 		caption = ""
+
 	default:
 		filename = fmt.Sprintf("%s.bin", id)
 		mimetype = "application/octet-stream"
 	}
 
-		return filename, caption, mimetype
+	return filename, caption, mimetype
 }
 
-// cleanMimetype remove parâmetros extras como "; codecs=opus" e retorna fallback se vazio
 func cleanMimetype(raw, fallback string) string {
 	if raw == "" {
 		return fallback
 	}
-	// Remove parâmetros: "image/jpeg; something" → "image/jpeg"
 	parts := strings.SplitN(raw, ";", 2)
 	clean := strings.TrimSpace(parts[0])
 	if clean == "" {
@@ -945,7 +1221,6 @@ func cleanMimetype(raw, fallback string) string {
 	return clean
 }
 
-// mimetypeToExt retorna extensão simples baseada no mimetype
 func mimetypeToExt(mimetype, fallback string) string {
 	switch mimetype {
 	case "image/jpeg":
@@ -999,7 +1274,6 @@ func extractMessageText(data *WookMessageData) string {
 		nome := msg.ContactMessage.DisplayName
 		vcard := msg.ContactMessage.VCard
 
-		// Regex para pegar o waid (telefone puro)
 		re := regexp.MustCompile(`waid=(\d+)`)
 		match := re.FindStringSubmatch(vcard)
 
@@ -1011,21 +1285,21 @@ func extractMessageText(data *WookMessageData) string {
 		return fmt.Sprintf("Contato:\nNome: %s\nTelefone: %s", nome, telefone)
 	}
 	if msg.LocationMessage != nil {
-	nome := msg.LocationMessage.Name
-	endereco := msg.LocationMessage.Address
-	lat := msg.LocationMessage.DegreesLatitude
-	lng := msg.LocationMessage.DegreesLongitude
+		nome := msg.LocationMessage.Name
+		endereco := msg.LocationMessage.Address
+		lat := msg.LocationMessage.DegreesLatitude
+		lng := msg.LocationMessage.DegreesLongitude
 
-	link := fmt.Sprintf("https://www.google.com/maps?q=%f,%f", lat, lng)
+		link := fmt.Sprintf("https://www.google.com/maps?q=%f,%f", lat, lng)
 
-	return fmt.Sprintf(
-		"📍 *Localização*\n\n*Nome:* %s\n*Endereço:* %s\n*Latitude:* %.6f\n*Longitude:* %.6f\n\n🌎 *Mapa:* %s",
-		nome,
-		endereco,
-		lat,
-		lng,
-		link,
-	)
+		return fmt.Sprintf(
+			"📍 *Localização*\n\n*Nome:* %s\n*Endereço:* %s\n*Latitude:* %.6f\n*Longitude:* %.6f\n\n🌎 *Mapa:* %s",
+			nome,
+			endereco,
+			lat,
+			lng,
+			link,
+		)
 	}
 	if msg.StickerMessage != nil {
 		if msg.StickerMessage.IsAnimated {
@@ -1038,92 +1312,4 @@ func extractMessageText(data *WookMessageData) string {
 	}
 
 	return ""
-}
-
-func (c *ChatwootService) FindContactByPhone(phone string) (*Contact, error) {
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/search?q=%s",
-		c.config.URL,
-		c.config.AccountID,
-		phone,
-	)
-
-	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("api_access_token", c.config.Token)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-
-	var result chatwootContactFilterResponse
-	json.NewDecoder(resp.Body).Decode(&result)
-
-	contact := &Contact{
-		ID: result.Payload[0].ID,
-	}
-
-	return contact, nil
-}
-
-func (c *ChatwootService) CreateContact(name, phone string) (*Contact, error) {
-
-	body := map[string]interface{}{
-		"name":         name,
-		"phone_number": phone,
-		"inbox_id":     c.config.InboxID,
-	}
-
-	jsonBody, _ := json.Marshal(body)
-
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts", c.config.URL, c.config.AccountID)
-
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
-
-	req.Header.Set("api_access_token", c.config.Token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-
-	var result chatwootContactCreateResponse
-	json.NewDecoder(resp.Body).Decode(&result)
-
-	contact := &Contact{
-    	ID: result.Payload.ID,
-	}
-	return contact, nil
-}
-func (c *ChatwootService) GetOrCreateContact(name, phone string) (*Contact, error) {
-
-	contact, err := c.FindContactByPhone(phone)
-	if err != nil {
-		return nil, err
-	}
-
-	if contact != nil {
-		return contact, nil
-	}
-
-	return c.CreateContact(name, phone)
-}
-
-func normalizePhone(phone string) string {
-
-	re := regexp.MustCompile(`\D`)
-	phone = re.ReplaceAllString(phone, "")
-
-	if !strings.HasPrefix(phone, "55") {
-		phone = "55" + phone
-	}
-
-	// corrige celular sem 9
-	if len(phone) == 12 {
-		ddd := phone[2:4]
-		num := phone[4:]
-		phone = "55" + ddd + "9" + num
-	}
-
-	return phone
 }
