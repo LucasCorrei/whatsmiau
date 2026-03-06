@@ -240,7 +240,11 @@ func (s *Whatsmiau) handleMessageEvent(id string, instance *models.Instance, e *
 	}
 
 	if shouldEmitWebhook && instance.Webhook != nil && instance.Webhook.Url != "" {
-		s.emit(wookMessage, instance.Webhook.Url)
+    	s.emit(wookMessage, instance.Webhook.Url)
+	}
+
+	if shouldEmitChatwoot && hasChatwoot(instance) {
+    	go s.handleChatwootMessage(id, instance, messageData)
 	}
 }
 
@@ -1048,4 +1052,13 @@ func (s *Whatsmiau) getPic(id string, jid types.JID) (string, string, error) {
 	}
 
 	return pic.URL, base64.StdEncoding.EncodeToString(picRaw), nil
+}
+
+func (s *Whatsmiau) handleChatwootMessage(id string, instance *models.Instance, messageData *WookMessageData) {
+    svc := NewChatwootService(ChatwootConfig{
+        URL:       instance.ChatwootURL,
+        AccountID: instance.ChatwootAccountID,
+        Token:     instance.ChatwootToken,
+    })
+    svc.HandleMessage(id, messageData)
 }
