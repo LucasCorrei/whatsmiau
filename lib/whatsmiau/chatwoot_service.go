@@ -180,8 +180,30 @@ type chatwootContactFilterResponse struct {
 	Payload []chatwootContact `json:"payload"`
 }
 
+// A API do Chatwoot retorna duas estruturas diferentes dependendo do endpoint:
+// POST /contacts → {"payload": {"contact": {"id": 123, ...}, "contact_inbox": {...}}}
+// Mas às vezes retorna → {"payload": {"id": 123, ...}} (versões mais antigas)
+// Suportamos os dois formatos.
+type chatwootContactCreatePayload struct {
+	// Formato novo: payload.contact.id
+	Contact *chatwootContact `json:"contact"`
+	// Formato antigo: payload.id (embutido diretamente)
+	ID          int    `json:"id"`
+	PhoneNumber string `json:"phone_number"`
+}
+
 type chatwootContactCreateResponse struct {
-	Payload chatwootContact `json:"payload"`
+	Payload chatwootContactCreatePayload `json:"payload"`
+}
+
+// contactIDFromCreateResponse extrai o ID do contato independente do formato da resposta.
+func contactIDFromCreateResponse(r chatwootContactCreateResponse) int {
+	// Formato novo: payload.contact.id
+	if r.Payload.Contact != nil && r.Payload.Contact.ID > 0 {
+		return r.Payload.Contact.ID
+	}
+	// Formato antigo: payload.id
+	return r.Payload.ID
 }
 
 type chatwootConversation struct {
@@ -534,6 +556,7 @@ func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMess
 		return
 	}
 
+
 	// Prefixo para mensagens de grupo: "**Nome** (telefone) diz:"
 	// Só em incoming (não em mensagens enviadas pelo operador)
 	groupPrefix := ""
@@ -864,7 +887,7 @@ func (c *ChatwootService) createContact(ctx context.Context, phone, name, identi
 		return 0, fmt.Errorf("erro ao decodificar resposta: %w", err)
 	}
 
-	contactID := result.Payload.ID
+	contactID := contactIDFromCreateResponse(result)
 	if contactID <= 0 {
 		zap.L().Error("chatwoot: ID de contato inválido retornado pela API",
 			zap.Int("contactId", contactID),
