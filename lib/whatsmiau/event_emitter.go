@@ -242,10 +242,6 @@ func (s *Whatsmiau) handleMessageEvent(id string, instance *models.Instance, e *
 	if shouldEmitWebhook && instance.Webhook != nil && instance.Webhook.Url != "" {
 		s.emit(wookMessage, instance.Webhook.Url)
 	}
-
-	if shouldEmitChatwoot && s.chatwootService != nil {
-		go s.chatwootService.HandleMessage(id, messageData)
-	}
 }
 
 func (s *Whatsmiau) handleReceiptEvent(id string, instance *models.Instance, e *events.Receipt, webhookEventMap map[string]bool, chatwootEventMap map[string]bool) {
