@@ -1030,7 +1030,10 @@ func (c *ChatwootService) CreateContact(name, phone string) (*Contact, error) {
 	var result chatwootContactCreateResponse
 	json.NewDecoder(resp.Body).Decode(&result)
 
-	return &result.Payload, nil
+	contact := &Contact{
+    	ID: result.Payload.ID,
+	}
+	return contact, nil
 }
 func (c *ChatwootService) GetOrCreateContact(name, phone string) (*Contact, error) {
 
