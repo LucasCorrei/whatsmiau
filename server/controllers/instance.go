@@ -85,6 +85,16 @@ func (s *Instance) Create(ctx echo.Context) error {
 
 	c := ctx.Request().Context()
 
+	if instance.ChatwootURL != "" && instance.ChatwootToken != "" && instance.ChatwootAccountID != "" {
+   		if instance.Webhook == nil {
+     	   instance.Webhook = &models.InstanceWebhook{}
+    	}
+    	if instance.Webhook.Base64 == nil {
+     	   t := true
+     	   instance.Webhook.Base64 = &t
+    	}
+	}
+
 	if err := s.repo.Create(c, &instance); err != nil {
     zap.L().Error("failed to create instance", zap.Error(err))
     return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to create instance")
