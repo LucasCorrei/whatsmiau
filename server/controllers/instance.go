@@ -104,7 +104,7 @@ if instance.ChatwootURL != "" && instance.ChatwootToken != "" && instance.Chatwo
             inboxName = instance.ID
         }
 
-        webhookURL := fmt.Sprintf("%s/chatwoot/webhook/%s", instance.ChatwootURL, instance.ID)
+        webhookURL := fmt.Sprintf("%s/webhook/chatwoot/%s", env.Env.GetServerURL(), instance.ID)
 
         inboxID, err := svc.InitInstance(
             context.Background(),
