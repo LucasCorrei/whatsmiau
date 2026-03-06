@@ -453,11 +453,35 @@ func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMess
 		return
 	}
 
-	// Quando fromMe=true, o pushName é o nome do OPERADOR, não do cliente.
-	// Nesse caso usamos o número como nome até o cliente responder e o nome real aparecer.
+	isGroup := strings.Contains(remoteJid, "@g.us")
+
+	// Nome do contato/grupo no Chatwoot:
+	// - Grupos: usa o nome do grupo (remoteJid sem sufixo) — pushName aqui é do remetente interno
+	// - fromMe=true: pushName é do operador; usamos o número até o cliente responder
+	// - incoming normal: usa o pushName do cliente
 	pushName := messageData.PushName
-	if isFromMe || pushName == "" {
-		pushName = phone
+	contactName := pushName
+	if isGroup {
+		// Para grupos, o contato no Chatwoot representa o grupo — usa o ID como nome
+		groupID := extractPhone(remoteJid) // número do grupo
+		contactName = fmt.Sprintf("Grupo %s", groupID)
+		if pushName != "" && !isFromMe {
+			// pushName em grupos é o nome do grupo (não do remetente)
+			contactName = pushName
+		}
+	} else if isFromMe {
+		// fromMe=true: pushName é do operador — usa número como nome do cliente
+		contactName = phone
+	} else if contactName == "" {
+		contactName = phone
+	}
+
+	// Remetente real dentro do grupo (para prefixar a mensagem)
+	var senderName, senderPhone string
+	if isGroup && !isFromMe {
+		participant := messageData.Key.Participant
+		senderPhone = extractPhone(participant)
+		senderName = pushName // em grupos, pushName é o nome do remetente
 	}
 
 	messageID := messageData.Key.Id
@@ -470,11 +494,12 @@ func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMess
 	zap.L().Info("chatwoot: 📞 processando mensagem",
 		zap.String("phone", phone),
 		zap.String("messageId", messageID),
-		zap.String("pushName", pushName),
-		zap.String("type", messageType))
+		zap.String("contactName", contactName),
+		zap.String("type", messageType),
+		zap.Bool("isGroup", isGroup))
 
 	// Passa o remoteJid completo como identifier e a foto de perfil
-	contactID, err := c.findOrCreateContact(ctx, phone, pushName, remoteJid, profilePicURL)
+	contactID, err := c.findOrCreateContact(ctx, phone, contactName, remoteJid, profilePicURL)
 	if err != nil {
 		zap.L().Error("chatwoot: erro ao buscar/criar contato", zap.Error(err))
 		return
@@ -509,8 +534,26 @@ func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMess
 		return
 	}
 
+	// Prefixo para mensagens de grupo: "**Nome** (telefone) diz:"
+	// Só em incoming (não em mensagens enviadas pelo operador)
+	groupPrefix := ""
+	if isGroup && !isFromMe {
+		if senderName != "" && senderPhone != "" {
+			groupPrefix = fmt.Sprintf("**%s** (%s) diz:\n", senderName, senderPhone)
+		} else if senderName != "" {
+			groupPrefix = fmt.Sprintf("**%s** diz:\n", senderName)
+		} else if senderPhone != "" {
+			groupPrefix = fmt.Sprintf("**%s** diz:\n", senderPhone)
+		}
+	}
+
 	if msg.Base64 != "" {
 		filename, caption, mimetype := extractMediaMeta(messageData)
+
+		// Adiciona prefixo na legenda da mídia (se houver) ou envia mensagem separada
+		if groupPrefix != "" {
+			caption = groupPrefix + caption
+		}
 
 		mediaBytes, err := base64.StdEncoding.DecodeString(msg.Base64)
 		if err != nil {
@@ -539,6 +582,11 @@ func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMess
 		zap.L().Warn("chatwoot: mensagem sem conteúdo, ignorando",
 			zap.String("type", messageData.MessageType))
 		return
+	}
+
+	// Adiciona prefixo de grupo ao texto
+	if groupPrefix != "" {
+		messageText = groupPrefix + messageText
 	}
 
 	if err := c.sendMessage(ctx, conversationID, messageText, messageID, isFromMe); err != nil {
