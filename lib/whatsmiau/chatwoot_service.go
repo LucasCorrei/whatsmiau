@@ -115,9 +115,10 @@ func (c *ChatwootService) Close() error {
 	return nil
 }
 
-// IsEnabled verifica se o Chatwoot está habilitado
 func (c *ChatwootService) IsEnabled() bool {
-	return env.Env.ChatwootEnabled
+	return c.config.URL != "" &&
+		c.config.Token != "" &&
+		c.config.AccountID != ""
 }
 
 // ── Tipos de resposta da API ──────────────────────────────────────────────────
@@ -947,7 +948,7 @@ func extractMessageText(data *WookMessageData) string {
 
 func (c *ChatwootService) FindContactByPhone(phone string) (*Contact, error) {
 	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/search?q=%s",
-		c.config.BaseURL,
+		c.config.URL,
 		c.config.AccountID,
 		phone,
 	)
@@ -960,7 +961,7 @@ func (c *ChatwootService) FindContactByPhone(phone string) (*Contact, error) {
 		return nil, err
 	}
 
-	var result ContactSearchResponse
+	var result chatwootContactFilterResponse
 	json.NewDecoder(resp.Body).Decode(&result)
 
 	if len(result.Payload) > 0 {
@@ -975,12 +976,12 @@ func (c *ChatwootService) CreateContact(name, phone string) (*Contact, error) {
 	body := map[string]interface{}{
 		"name":         name,
 		"phone_number": phone,
-		"inbox_id":     c.InboxID,
+		"inbox_id":     c.config.InboxID,
 	}
 
 	jsonBody, _ := json.Marshal(body)
 
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts", c.config.BaseURL, c.config.AccountID)
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts", c.config.URL, c.config.AccountID)
 
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
 
@@ -992,7 +993,7 @@ func (c *ChatwootService) CreateContact(name, phone string) (*Contact, error) {
 		return nil, err
 	}
 
-	var result ContactResponse
+	var result chatwootContactCreateResponse
 	json.NewDecoder(resp.Body).Decode(&result)
 
 	return &result.Payload, nil
