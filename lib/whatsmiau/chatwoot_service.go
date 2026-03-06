@@ -18,6 +18,12 @@ import (
 	"github.com/verbeux-ai/whatsmiau/env"
 	"go.uber.org/zap"
 )
+type Contact struct {
+	ID int `json:"id"`
+	Name string `json:"name"`
+	PhoneNumber string `json:"phone_number"`
+	Identifier string `json:"identifier"`
+}
 
 type ChatwootConfig struct {
 	URL       string
@@ -44,7 +50,7 @@ func NewChatwootService(config ChatwootConfig) *ChatwootService {
 	}
 
 	// Se o Chatwoot não está habilitado, retorna sem inicializar nada
-	if !env.Env.ChatwootEnabled {
+	if !c.config.Enabled {
 		zap.L().Info("chatwoot: serviço desabilitado via CHATWOOT_ENABLED=false")
 		return service
 	}
@@ -147,7 +153,7 @@ type chatwootConversationCreateResponse struct {
 
 func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 	// Verifica se está habilitado
-	if !env.Env.ChatwootEnabled {
+	if !c.config.Enabled {
 		return
 	}
 
@@ -941,15 +947,15 @@ func extractMessageText(data *WookMessageData) string {
 
 func (c *ChatwootService) FindContactByPhone(phone string) (*Contact, error) {
 	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/search?q=%s",
-		c.BaseURL,
-		c.AccountID,
+		c.config.BaseURL,
+		c.config.AccountID,
 		phone,
 	)
 
 	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("api_access_token", c.Token)
+	req.Header.Set("api_access_token", c.config.Token)
 
-	resp, err := c.Client.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -974,14 +980,14 @@ func (c *ChatwootService) CreateContact(name, phone string) (*Contact, error) {
 
 	jsonBody, _ := json.Marshal(body)
 
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts", c.BaseURL, c.AccountID)
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts", c.config.BaseURL, c.config.AccountID)
 
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
 
-	req.Header.Set("api_access_token", c.Token)
+	req.Header.Set("api_access_token", c.config.Token)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.Client.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
