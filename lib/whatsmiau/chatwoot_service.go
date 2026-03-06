@@ -998,11 +998,11 @@ func (c *ChatwootService) FindContactByPhone(phone string) (*Contact, error) {
 	var result chatwootContactFilterResponse
 	json.NewDecoder(resp.Body).Decode(&result)
 
-	if len(result.Payload) > 0 {
-		return &result.Payload[0], nil
+	contact := &Contact{
+		ID: result.Payload[0].ID,
 	}
 
-	return nil, nil
+	return contact, nil
 }
 
 func (c *ChatwootService) CreateContact(name, phone string) (*Contact, error) {
