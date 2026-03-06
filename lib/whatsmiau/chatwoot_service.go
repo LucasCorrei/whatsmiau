@@ -30,12 +30,17 @@ type ChatwootService struct {
 	config     ChatwootConfig
 	httpClient *http.Client
 	db         *sql.DB
+
+	contactCache map[string]int
 }
 
 func NewChatwootService(config ChatwootConfig) *ChatwootService {
 	service := &ChatwootService{
-		config:     config,
-		httpClient: &http.Client{Timeout: 15 * time.Second},
+		config: config,
+		httpClient: &http.Client{
+			Timeout: 15 * time.Second,
+		},
+		contactCache: make(map[string]int),
 	}
 
 	// Se o Chatwoot não está habilitado, retorna sem inicializar nada
@@ -159,7 +164,7 @@ func (c *ChatwootService) HandleMessage(messageData *WookMessageData) {
 
 	remoteJid := messageData.Key.RemoteJid
 
-	phone := extractPhone(remoteJid)
+	phone := normalizePhone(extractPhone(remoteJid))
 	if phone == "" {
 		zap.L().Warn("chatwoot: número inválido", zap.String("remoteJid", remoteJid))
 		return
@@ -324,23 +329,32 @@ func (c *ChatwootService) checkMessageExists(ctx context.Context, conversationID
 }
 
 // ── Contatos ──────────────────────────────────────────────────────────────────
-
 func (c *ChatwootService) findOrCreateContact(ctx context.Context, phone, name, identifier string) (int, error) {
-	zap.L().Info("chatwoot: 🔍 buscando contato",
-		zap.String("phone", phone),
-		zap.String("name", name))
+
+	if id, ok := c.contactCache[phone]; ok {
+		zap.L().Info("chatwoot: contato vindo do cache",
+			zap.Int("contactId", id))
+		return id, nil
+	}
 
 	id, err := c.searchContact(ctx, phone)
 	if err != nil {
 		return 0, err
 	}
+
 	if id > 0 {
-		zap.L().Info("chatwoot: ✅ contato ENCONTRADO", zap.Int("contactId", id))
+		c.contactCache[phone] = id
 		return id, nil
 	}
 
-	zap.L().Info("chatwoot: 📝 criando novo contato", zap.String("phone", phone))
-	return c.createContact(ctx, phone, name, identifier)
+	id, err = c.createContact(ctx, phone, name, identifier)
+	if err != nil {
+		return 0, err
+	}
+
+	c.contactCache[phone] = id
+
+	return id, nil
 }
 
 func (c *ChatwootService) searchContact(ctx context.Context, phone string) (int, error) {
@@ -350,7 +364,7 @@ func (c *ChatwootService) searchContact(ctx context.Context, phone string) (int,
 			{
 				"attribute_key":   "phone_number",
 				"filter_operator": "equal_to",
-				"values":          []string{fmt.Sprintf("+%s", phone)},
+				"values": []string{fmt.Sprintf("+%s", phone), phone,},
 				"query_operator":  nil,
 			},
 		},
@@ -989,4 +1003,23 @@ func (c *ChatwootService) GetOrCreateContact(name, phone string) (*Contact, erro
 	}
 
 	return c.CreateContact(name, phone)
+}
+
+func normalizePhone(phone string) string {
+
+	re := regexp.MustCompile(`\D`)
+	phone = re.ReplaceAllString(phone, "")
+
+	if !strings.HasPrefix(phone, "55") {
+		phone = "55" + phone
+	}
+
+	// corrige celular sem 9
+	if len(phone) == 12 {
+		ddd := phone[2:4]
+		num := phone[4:]
+		phone = "55" + ddd + "9" + num
+	}
+
+	return phone
 }
