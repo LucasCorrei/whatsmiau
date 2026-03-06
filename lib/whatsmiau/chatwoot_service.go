@@ -556,6 +556,16 @@ func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMess
 		return
 	}
 
+	// Reactions vindas do WhatsApp são ignoradas — o Chatwoot não tem API nativa
+	// para aplicar reactions em mensagens existentes, e enviar como texto causaria
+	// um loop: Chatwoot recebe "[Reação: 😂]", dispara webhook, controller tenta
+	// enviar de volta ao WhatsApp como mensagem de texto.
+	if msg.ReactionMessage != nil {
+		zap.L().Debug("chatwoot: reaction do WhatsApp ignorada",
+			zap.String("emoji", msg.ReactionMessage.Text))
+		return
+	}
+
 
 	// Prefixo para mensagens de grupo: "**Nome** (telefone) diz:"
 	// Só em incoming (não em mensagens enviadas pelo operador)
