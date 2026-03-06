@@ -128,7 +128,9 @@ type chatwootContact struct {
 }
 
 type chatwootContactFilterResponse struct {
-	Payload []chatwootContact `json:"payload"`
+	Payload []struct {
+		ID int `json:"id"`
+	} `json:"payload"`
 }
 
 // CORRIGIDO: A API retorna o contato diretamente em payload, não em payload.contact
@@ -365,14 +367,20 @@ func (c *ChatwootService) findOrCreateContact(ctx context.Context, phone, name, 
 }
 
 func (c *ChatwootService) searchContact(ctx context.Context, phone string) (int, error) {
+
+	// garante + apenas uma vez
+	if !strings.HasPrefix(phone, "+") {
+		phone = "+" + phone
+	}
+
 	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/filter", c.config.URL, c.config.AccountID)
+
 	body := map[string]interface{}{
 		"payload": []map[string]interface{}{
 			{
 				"attribute_key":   "phone_number",
 				"filter_operator": "equal_to",
-				"values": []string{fmt.Sprintf("+%s", phone), phone,},
-				"query_operator":  nil,
+				"values":          []string{phone},
 			},
 		},
 	}
@@ -383,21 +391,35 @@ func (c *ChatwootService) searchContact(ctx context.Context, phone string) (int,
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode >= 300 {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("chatwoot search error: %s", string(bodyBytes))
+	}
+
 	var result chatwootContactFilterResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return 0, err
 	}
-	if len(result.Payload) > 0 {
-		return result.Payload[0].ID, nil
+
+	if len(result.Payload) == 0 {
+		return 0, nil
 	}
-	return 0, nil
+
+	return result.Payload[0].ID, nil
 }
 
 func (c *ChatwootService) createContact(ctx context.Context, phone, name, identifier string) (int, error) {
+
+	// garante + apenas uma vez
+	if !strings.HasPrefix(phone, "+") {
+		phone = "+" + phone
+	}
+
 	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts", c.config.URL, c.config.AccountID)
+
 	body := map[string]interface{}{
 		"name":         name,
-		"phone_number": fmt.Sprintf("+%s", phone),
+		"phone_number": phone,
 		"identifier":   identifier,
 	}
 
@@ -407,34 +429,46 @@ func (c *ChatwootService) createContact(ctx context.Context, phone, name, identi
 	}
 	defer resp.Body.Close()
 
-	// CORRIGIDO: Log da resposta bruta para debug
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return 0, fmt.Errorf("erro ao ler resposta: %w", err)
 	}
 
+	if resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("chatwoot create contact error: %s", string(bodyBytes))
+	}
+
 	zap.L().Info("chatwoot: resposta bruta da criação de contato",
-		zap.String("response", string(bodyBytes)))
+		zap.String("response", string(bodyBytes)),
+	)
 
 	var result chatwootContactCreateResponse
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
-		zap.L().Error("chatwoot: erro ao decodificar resposta de criar contato",
+
+		zap.L().Error("chatwoot: erro ao decodificar resposta",
 			zap.Error(err),
-			zap.String("response", string(bodyBytes)))
-		return 0, fmt.Errorf("erro ao decodificar resposta: %w", err)
+			zap.String("response", string(bodyBytes)),
+		)
+
+		return 0, err
 	}
 
 	contactID := result.Payload.ID
-	
-	// CORRIGIDO: Verifica se o ID é válido
+
 	if contactID <= 0 {
-		zap.L().Error("chatwoot: ID de contato inválido retornado pela API",
+
+		zap.L().Error("chatwoot: ID inválido retornado",
 			zap.Int("contactId", contactID),
-			zap.String("response", string(bodyBytes)))
-		return 0, fmt.Errorf("API retornou contactId inválido: %d", contactID)
+			zap.String("response", string(bodyBytes)),
+		)
+
+		return 0, fmt.Errorf("chatwoot retornou contactId inválido")
 	}
 
-	zap.L().Info("chatwoot: ✅ contato CRIADO", zap.Int("contactId", contactID))
+	zap.L().Info("chatwoot: ✅ contato criado",
+		zap.Int("contactId", contactID),
+		zap.String("phone", phone),
+	)
 
 	return contactID, nil
 }
