@@ -1060,5 +1060,5 @@ func (s *Whatsmiau) handleChatwootMessage(id string, instance *models.Instance, 
         AccountID: instance.ChatwootAccountID,
         Token:     instance.ChatwootToken,
     })
-    svc.HandleMessage(id, messageData)
+    svc.HandleMessage(messageData)
 }
