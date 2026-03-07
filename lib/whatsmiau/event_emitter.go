@@ -1055,6 +1055,9 @@ func (s *Whatsmiau) getPic(id string, jid types.JID) (string, string, error) {
 }
 
 func (s *Whatsmiau) handleChatwootMessage(id string, instance *models.Instance, messageData *WookMessageData) {
+	if messageData == nil || messageData.Key == nil {
+        return
+    }
     svc := NewChatwootService(ChatwootConfig{
         URL:       instance.ChatwootURL,
         AccountID: instance.ChatwootAccountID,
