@@ -727,7 +727,7 @@ func (c *ChatwootService) findOrCreateContact(ctx context.Context, phone, name, 
 		// Para grupos, busca pelo identifier (chatId sem "@g.us") — nunca pelo phone_number,
 		// pois o "phone" de um grupo é o ID numérico do grupo (ex: 559991905538-1635585672)
 		// que não corresponde a nenhum phone_number real e pode causar falsos positivos.
-		contactID, err := c.searchContactByIdentifier(ctx, phone) // identifier do grupo = phone (sem @g.us)
+		contactID, err := c.searchContactByIdentifier(ctx, identifier)
 		if err == nil && contactID > 0 {
 			zap.L().Info("chatwoot: ✅ contato de grupo ENCONTRADO por identifier", zap.Int("contactId", contactID))
 			return contactID, nil
@@ -889,7 +889,7 @@ func (c *ChatwootService) createContact(ctx context.Context, phone, name, identi
 		// Grupos: identifier é o próprio remoteJid do grupo, sem phone_number
 		body = map[string]interface{}{
 			"name":       name,
-			"identifier": phone, // para grupos usa o chatId sem "@g.us"
+			"identifier": identifier, // para grupos usa o chatId sem "@g.us"
 		}
 	} else {
 		// Contatos individuais: phone_number com "+" e identifier = remoteJid
