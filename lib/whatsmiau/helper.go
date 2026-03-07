@@ -78,7 +78,7 @@ func BuildContextInfoWithQuoted(params QuotedMessageParams) *waE2E.ContextInfo {
 	}
 
 	contextInfo := &waE2E.ContextInfo{
-		StanzaId:      proto.String(params.QuoteMessageID),
+		StanzaID:      proto.String(params.QuoteMessageID),
 		QuotedMessage: quotedMsg,
 	}
 
