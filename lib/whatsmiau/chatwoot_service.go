@@ -439,7 +439,7 @@ func (c *ChatwootService) createBotConversation(ctx context.Context, contactID, 
 // instanceID é o ID da instância WhatsMiau (ex: "VENDAS") — usado para
 // resolver dinamicamente qual inbox usar, via cache ou busca na API.
 // profilePicURL é a URL da foto de perfil do contato (pode ser "").
-func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMessageData, profilePicURL string) {
+func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMessageData, profilePicURL string, instanceJID ...string) {
 	if !c.IsEnabled() {
 		return
 	}
@@ -459,16 +459,18 @@ func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMess
 		return
 	}
 
-	// Ignora mensagens do próprio número para si mesmo (ex: "Mensagens Salvas" / sync pós-QR code).
-	// Detectado quando: fromMe=true, remoteJid é número individual (@s.whatsapp.net),
-	// e não há Participant (mensagens de grupo sempre têm Participant).
 	isFromMe := messageData.Key.FromMe
-	if isFromMe &&
-		strings.Contains(remoteJidRaw, "@s.whatsapp.net") &&
-		messageData.Key.Participant == "" {
-		zap.L().Debug("chatwoot: ignorando mensagem para si mesmo (saved messages / history sync)",
-			zap.String("remoteJid", remoteJidRaw))
-		return
+
+	// Ignora mensagens do próprio número para si mesmo (Mensagens Salvas / sync pós-QR code).
+	// Só é possível detectar se o JID da instância foi passado — compara o remoteJid com o próprio número.
+	if isFromMe && len(instanceJID) > 0 && instanceJID[0] != "" {
+		ownPhone := extractPhone(instanceJID[0])
+		remotePhone := extractPhone(remoteJidRaw)
+		if ownPhone != "" && ownPhone == remotePhone {
+			zap.L().Debug("chatwoot: ignorando mensagem para si mesmo (saved messages / history sync)",
+				zap.String("remoteJid", remoteJidRaw))
+			return
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
