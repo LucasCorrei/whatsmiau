@@ -1061,20 +1061,31 @@ func (s *Whatsmiau) handleChatwootMessage(id string, instance *models.Instance, 
         Token:     instance.ChatwootToken,
     })
 
-    var profilePicURL string
-    if messageData != nil && messageData.Key != nil {
-        if jid, err := types.ParseJID(messageData.Key.RemoteJid); err == nil {
-            if url, _, err := s.getPic(id, jid); err == nil {
-                profilePicURL = url
+    opts := HandleMessageOptions{}
+
+    // Foto de perfil e JID da instância
+    if client, ok := s.clients.Load(id); ok && client != nil {
+        // JID da própria instância (para ignorar mensagens para si mesmo)
+        if client.Store.ID != nil {
+            opts.InstanceJID = client.Store.ID.String()
+        }
+
+        // Foto de perfil do contato/grupo
+        if messageData != nil && messageData.Key != nil {
+            if jid, err := types.ParseJID(messageData.Key.RemoteJid); err == nil {
+                if url, _, err := s.getPic(id, jid); err == nil {
+                    opts.ProfilePicURL = url
+                }
+
+                // Nome real do grupo
+                if jid.Server == "g.us" {
+                    if groupInfo, err := client.GetGroupInfo(jid); err == nil && groupInfo != nil {
+                        opts.GroupName = groupInfo.Name
+                    }
+                }
             }
         }
     }
 
-    // Passa o JID da própria instância para detectar mensagens para si mesmo
-    var instanceJID string
-    if client, ok := s.clients.Load(id); ok && client != nil && client.Store.ID != nil {
-        instanceJID = client.Store.ID.String()
-    }
-
-    svc.HandleMessage(id, messageData, profilePicURL, instanceJID)
+    svc.HandleMessage(id, messageData, opts)
 }
