@@ -21,6 +21,8 @@ import (
 	"go.uber.org/zap"
 )
 
+var conversationLocks sync.Map
+
 type ChatwootConfig struct {
 	URL       string
 	AccountID string
@@ -41,6 +43,10 @@ type ChatwootService struct {
 	inboxCacheMu sync.RWMutex
 }
 
+func getConversationLock(key string) *sync.Mutex {
+    lock, _ := conversationLocks.LoadOrStore(key, &sync.Mutex{})
+    return lock.(*sync.Mutex)
+}
 func NewChatwootService(config ChatwootConfig) *ChatwootService {
 	service := &ChatwootService{
 		config:     config,
@@ -1035,8 +1041,14 @@ func (c *ChatwootService) findOrCreateConversation(ctx context.Context, contactI
 		return 0, fmt.Errorf("contactID inválido: %d", contactID)
 	}
 
-	zap.L().Info("chatwoot: 🔍 buscando conversa existente",
-		zap.Int("contactId", contactID))
+	lockKey := fmt.Sprintf("%d-%d", contactID, inboxID)
+	lock := getConversationLock(lockKey)
+
+	lock.Lock()
+	defer lock.Unlock()
+
+	zap.L().Info("chatwoot: 🔒 lock conversa",
+		zap.String("key", lockKey))
 
 	id, err := c.findOrReopenConversation(ctx, contactID, inboxID)
 	if err != nil {
