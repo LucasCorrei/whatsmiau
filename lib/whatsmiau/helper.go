@@ -50,36 +50,36 @@ type QuotedMessageParams struct {
 }
 
 func BuildContextInfoWithQuoted(params QuotedMessageParams) *waE2E.ContextInfo {
-	if len(params.QuoteMessageID) == 0 {
+
+	if params.QuoteMessageID == "" {
 		return nil
 	}
 
 	var quotedMsg *waE2E.Message
 
 	if params.QuotedMessage != nil {
+
 		quotedMsg = params.QuotedMessage
+
+	} else if params.QuoteMessage != "" {
+
+		quotedMsg = &waE2E.Message{
+			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+				Text: proto.String(params.QuoteMessage),
+			},
+		}
+
 	} else {
-		if len(params.QuoteMessage) > 0 {
-			quotedMsg = &waE2E.Message{
-				ExtendedTextMessage: &waE2E.ExtendedTextMessage{
-					Text: proto.String(params.QuoteMessage),
-				},
-			}
-		} else {
-			quotedMsg = &waE2E.Message{
-				Conversation: proto.String(""),
-			}
+
+		// ⚠️ IMPORTANTE: precisa ter conteúdo
+		quotedMsg = &waE2E.Message{
+			Conversation: proto.String(" "),
 		}
 	}
 
 	contextInfo := &waE2E.ContextInfo{
-		StanzaID:      proto.String(params.QuoteMessageID),
+		StanzaId:      proto.String(params.QuoteMessageID),
 		QuotedMessage: quotedMsg,
-	}
-
-	if params.RemoteJID != nil && params.RemoteJID.Server == "g.us" {
-		participantJID := params.RemoteJID.ToNonAD().String()
-		contextInfo.Participant = proto.String(participantJID)
 	}
 
 	return contextInfo
