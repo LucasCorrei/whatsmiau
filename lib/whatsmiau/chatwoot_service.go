@@ -435,11 +435,23 @@ func (c *ChatwootService) createBotConversation(ctx context.Context, contactID, 
 
 // ── Handler principal ─────────────────────────────────────────────────────────
 
+// HandleMessageOptions contém opções adicionais para o HandleMessage.
+type HandleMessageOptions struct {
+	// ProfilePicURL é a URL da foto de perfil do contato (pode ser "").
+	ProfilePicURL string
+	// InstanceJID é o JID da própria instância (ex: "5511999...@s.whatsapp.net").
+	// Usado para ignorar mensagens enviadas para si mesmo (Mensagens Salvas / sync QR code).
+	InstanceJID string
+	// GroupName é o nome real do grupo (obtido via client.GetGroupInfo).
+	// Se vazio, usa o ID numérico do grupo como nome.
+	GroupName string
+}
+
 // HandleMessage processa uma mensagem e envia ao Chatwoot.
 // instanceID é o ID da instância WhatsMiau (ex: "VENDAS") — usado para
 // resolver dinamicamente qual inbox usar, via cache ou busca na API.
 // profilePicURL é a URL da foto de perfil do contato (pode ser "").
-func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMessageData, profilePicURL string, instanceJID ...string) {
+func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMessageData, opts HandleMessageOptions) {
 	if !c.IsEnabled() {
 		return
 	}
@@ -463,8 +475,8 @@ func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMess
 
 	// Ignora mensagens do próprio número para si mesmo (Mensagens Salvas / sync pós-QR code).
 	// Só é possível detectar se o JID da instância foi passado — compara o remoteJid com o próprio número.
-	if isFromMe && len(instanceJID) > 0 && instanceJID[0] != "" {
-		ownPhone := extractPhone(instanceJID[0])
+	if isFromMe && opts.InstanceJID != "" {
+		ownPhone := extractPhone(opts.InstanceJID)
 		remotePhone := extractPhone(remoteJidRaw)
 		if ownPhone != "" && ownPhone == remotePhone {
 			zap.L().Debug("chatwoot: ignorando mensagem para si mesmo (saved messages / history sync)",
@@ -507,12 +519,13 @@ func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMess
 	pushName := messageData.PushName
 	contactName := pushName
 	if isGroup {
-		// Para grupos, o contato no Chatwoot representa o grupo — usa o ID como nome
-		groupID := extractPhone(remoteJid) // número do grupo
-		contactName = fmt.Sprintf("Grupo %s", groupID)
-		if pushName != "" && !isFromMe {
-			// pushName em grupos é o nome do grupo (não do remetente)
-			contactName = pushName
+		// Para grupos, usa o nome real do grupo se disponível (passado via opts.GroupName).
+		// pushName é o nome do REMETENTE, não do grupo — nunca usar para nomear o contato do grupo.
+		groupID := extractPhone(remoteJid)
+		if opts.GroupName != "" {
+			contactName = opts.GroupName
+		} else {
+			contactName = fmt.Sprintf("Grupo %s", groupID)
 		}
 	} else if isFromMe {
 		// fromMe=true: pushName é do operador — usa número como nome do cliente
@@ -544,7 +557,7 @@ func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMess
 		zap.Bool("isGroup", isGroup))
 
 	// Passa o remoteJid completo como identifier e a foto de perfil
-	contactID, err := c.findOrCreateContact(ctx, phone, contactName, remoteJid, profilePicURL)
+	contactID, err := c.findOrCreateContact(ctx, phone, contactName, remoteJid, opts.ProfilePicURL)
 	if err != nil {
 		zap.L().Error("chatwoot: erro ao buscar/criar contato", zap.Error(err))
 		return
