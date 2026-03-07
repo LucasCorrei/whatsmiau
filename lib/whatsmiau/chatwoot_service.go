@@ -685,6 +685,22 @@ func (c *ChatwootService) findOrCreateContact(ctx context.Context, phone, name, 
 		zap.String("phone", phone),
 		zap.String("name", name))
 
+	isGroup := strings.Contains(identifier, "@g.us")
+
+	if isGroup {
+		// Para grupos, busca pelo identifier (chatId sem "@g.us") — nunca pelo phone_number,
+		// pois o "phone" de um grupo é o ID numérico do grupo (ex: 559991905538-1635585672)
+		// que não corresponde a nenhum phone_number real e pode causar falsos positivos.
+		contactID, err := c.searchContactByIdentifier(ctx, phone) // identifier do grupo = phone (sem @g.us)
+		if err == nil && contactID > 0 {
+			zap.L().Info("chatwoot: ✅ contato de grupo ENCONTRADO por identifier", zap.Int("contactId", contactID))
+			return contactID, nil
+		}
+		zap.L().Info("chatwoot: 📝 criando novo contato de grupo", zap.String("phone", phone))
+		return c.createContact(ctx, phone, name, identifier, profilePicURL)
+	}
+
+	// Contatos individuais: busca pelo phone_number normalmente
 	contactID, err := c.searchContactByPhone(ctx, phone)
 	if err != nil {
 		return 0, err
@@ -874,6 +890,20 @@ func (c *ChatwootService) createContact(ctx context.Context, phone, name, identi
 			zap.String("identifier", identifier),
 			zap.String("phone", phone))
 
+		isGroupRetry := strings.Contains(identifier, "@g.us")
+
+		if isGroupRetry {
+			// Para grupos, o identifier armazenado é o phone (sem @g.us)
+			existingID, err := c.searchContactByIdentifier(ctx, phone)
+			if err == nil && existingID > 0 {
+				zap.L().Info("chatwoot: ✅ grupo recuperado por identifier (phone) após 422", zap.Int("contactId", existingID))
+				_ = c.addLabelToContact(ctx, existingID)
+				return existingID, nil
+			}
+			return 0, fmt.Errorf("grupo já existe (422) mas não foi possível recuperá-lo: phone=%s", phone)
+		}
+
+		// Contatos individuais: tenta por identifier completo primeiro
 		if identifier != "" {
 			existingID, err := c.searchContactByIdentifier(ctx, identifier)
 			if err == nil && existingID > 0 {
@@ -1143,10 +1173,10 @@ func (c *ChatwootService) sendMessage(ctx context.Context, conversationID int, c
 	return nil
 }
 
-// sendReactionAsReply envia uma reaction do WhatsApp como mensagem reply no Chatwoot.
-// Busca o ID interno da mensagem original via SQL (source_id = 'WAID:{originalMsgID}')
-// e envia o emoji com content_attributes.in_reply_to apontando para ela.
-func (c *ChatwootService) sendReactionAsReply(ctx context.Context, conversationID int, emoji, originalMsgID, reactionMsgID string, isFromMe bool) error {
+// sendReactionAsReply envia uma reaction do WhatsApp como mensagem de emoji no Chatwoot.
+// A API do Chatwoot não expõe campos de reply (in_reply_to) no endpoint de criação de mensagem,
+// portanto o emoji é enviado como mensagem de texto simples na conversa.
+func (c *ChatwootService) sendReactionAsReply(ctx context.Context, conversationID int, emoji, _, reactionMsgID string, isFromMe bool) error {
 	sourceID := fmt.Sprintf("WAID:%s", reactionMsgID)
 
 	messageType := "incoming"
@@ -1154,7 +1184,6 @@ func (c *ChatwootService) sendReactionAsReply(ctx context.Context, conversationI
 		messageType = "outgoing"
 	}
 
-	// Evita duplicata
 	exists, err := c.checkMessageExists(ctx, conversationID, sourceID)
 	if err != nil {
 		zap.L().Warn("chatwoot: erro ao verificar duplicata de reaction", zap.Error(err))
@@ -1162,29 +1191,15 @@ func (c *ChatwootService) sendReactionAsReply(ctx context.Context, conversationI
 		return nil
 	}
 
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
+		c.config.URL, c.config.AccountID, conversationID)
+
 	body := map[string]interface{}{
 		"content":      emoji,
 		"message_type": messageType,
 		"private":      false,
 		"source_id":    sourceID,
 	}
-
-	// Se temos o ID da mensagem original, busca o ID interno no Chatwoot e faz reply
-	if originalMsgID != "" {
-		internalID, err := c.findMessageInternalID(ctx, conversationID, originalMsgID)
-		if err != nil {
-			zap.L().Warn("chatwoot: não foi possível encontrar mensagem original para reply de reaction",
-				zap.String("originalMsgID", originalMsgID),
-				zap.Error(err))
-		} else if internalID > 0 {
-			body["content_attributes"] = map[string]interface{}{
-				"in_reply_to": internalID,
-			}
-		}
-	}
-
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
-		c.config.URL, c.config.AccountID, conversationID)
 
 	resp, err := c.doRequest(ctx, "POST", url, body)
 	if err != nil {
@@ -1197,31 +1212,11 @@ func (c *ChatwootService) sendReactionAsReply(ctx context.Context, conversationI
 		return fmt.Errorf("chatwoot erro %d: %s", resp.StatusCode, string(raw))
 	}
 
-	zap.L().Info("chatwoot: ✅ reaction enviada como reply",
+	zap.L().Info("chatwoot: ✅ reaction enviada como emoji",
 		zap.String("emoji", emoji),
-		zap.String("originalMsgID", originalMsgID),
 		zap.Int("conversationId", conversationID))
 
 	return nil
-}
-
-// findMessageInternalID busca o ID interno do Chatwoot de uma mensagem pelo WAID,
-// usando SQL direto no PostgreSQL: source_id = 'WAID:{msgID}'.
-func (c *ChatwootService) findMessageInternalID(ctx context.Context, conversationID int, msgID string) (int, error) {
-	if c.db == nil {
-		return 0, fmt.Errorf("banco não conectado")
-	}
-
-	sourceID := msgID
-	query := `SELECT id FROM messages WHERE conversation_id = $1 AND source_id = $2 LIMIT 1`
-
-	var id int
-	err := c.db.QueryRowContext(ctx, query, conversationID, sourceID).Scan(&id)
-	if err != nil {
-		return 0, fmt.Errorf("mensagem não encontrada: source_id=%s: %w", sourceID, err)
-	}
-
-	return id, nil
 }
 
 func (c *ChatwootService) sendMediaMessage(
