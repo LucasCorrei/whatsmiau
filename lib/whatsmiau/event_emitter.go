@@ -1079,7 +1079,7 @@ func (s *Whatsmiau) handleChatwootMessage(id string, instance *models.Instance, 
 
                 // Nome real do grupo
                 if jid.Server == "g.us" {
-                    if groupInfo, err := client.GetGroupInfo(jid); err == nil && groupInfo != nil {
+                    if groupInfo, err := client.GetGroupInfo(context.Background(), jid); err == nil && groupInfo != nil {
                         opts.GroupName = groupInfo.Name
                     }
                 }
