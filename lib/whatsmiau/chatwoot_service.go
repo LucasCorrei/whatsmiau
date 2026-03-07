@@ -448,7 +448,28 @@ func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMess
 		return
 	}
 
+	// Ignora mensagens de canais que não devem abrir conversas no Chatwoot:
+	// - status@broadcast: atualizações de status do WhatsApp
+	// - newsletter: canais/newsletters do WhatsApp
+	// - remoteJid vazio ou inválido
+	remoteJidRaw := messageData.Key.RemoteJid
+	if strings.Contains(remoteJidRaw, "status@broadcast") ||
+		strings.Contains(remoteJidRaw, "newsletter") ||
+		strings.Contains(remoteJidRaw, "lid") {
+		return
+	}
+
+	// Ignora mensagens do próprio número para si mesmo (ex: "Mensagens Salvas" / sync pós-QR code).
+	// Detectado quando: fromMe=true, remoteJid é número individual (@s.whatsapp.net),
+	// e não há Participant (mensagens de grupo sempre têm Participant).
 	isFromMe := messageData.Key.FromMe
+	if isFromMe &&
+		strings.Contains(remoteJidRaw, "@s.whatsapp.net") &&
+		messageData.Key.Participant == "" {
+		zap.L().Debug("chatwoot: ignorando mensagem para si mesmo (saved messages / history sync)",
+			zap.String("remoteJid", remoteJidRaw))
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -467,7 +488,7 @@ func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMess
 		return
 	}
 
-	remoteJid := messageData.Key.RemoteJid
+	remoteJid := remoteJidRaw
 
 	phone := extractPhone(remoteJid)
 	if phone == "" {
