@@ -1061,7 +1061,6 @@ func (s *Whatsmiau) handleChatwootMessage(id string, instance *models.Instance, 
         Token:     instance.ChatwootToken,
     })
 
-    // Busca foto de perfil do contato (remoteJid do cliente, não do operador)
     var profilePicURL string
     if messageData != nil && messageData.Key != nil {
         if jid, err := types.ParseJID(messageData.Key.RemoteJid); err == nil {
@@ -1071,5 +1070,11 @@ func (s *Whatsmiau) handleChatwootMessage(id string, instance *models.Instance, 
         }
     }
 
-    svc.HandleMessage(id, messageData, profilePicURL)
+    // Passa o JID da própria instância para detectar mensagens para si mesmo
+    var instanceJID string
+    if client, ok := s.clients.Load(id); ok && client != nil && client.Store.ID != nil {
+        instanceJID = client.Store.ID.String()
+    }
+
+    svc.HandleMessage(id, messageData, profilePicURL, instanceJID)
 }
