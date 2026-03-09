@@ -447,7 +447,7 @@ func buildReplyButtonsMessage(data *SendButtonsRequest, contextInfo *waE2E.Conte
 
 	return &waE2E.Message{
 		ButtonsMessage: &waE2E.ButtonsMessage{
-			Text:        proto.String(data.Title),
+			Header:      &waE2E.ButtonsMessage_Text{Text: data.Title},
 			ContentText: proto.String(data.Description),
 			FooterText:  proto.String(data.Footer),
 			Buttons:     protoButtons,
