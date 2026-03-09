@@ -354,6 +354,11 @@ type ButtonItem struct {
 	CopyCode    string `json:"copyCode"`    // copy
 	URL         string `json:"url"`         // url
 	PhoneNumber string `json:"phoneNumber"` // call
+	// campos legados — mantidos para compatibilidade com o controller
+	Currency string `json:"currency"`
+	Name     string `json:"name"`
+	KeyType  string `json:"keyType"`
+	Key      string `json:"key"`
 }
 
 type SendButtonsRequest struct {
