@@ -20,11 +20,11 @@ import (
 	"github.com/verbeux-ai/whatsmiau/env"
 	"github.com/verbeux-ai/whatsmiau/models"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"go.uber.org/zap"
 	"golang.org/x/net/context"
-	"go.mau.fi/whatsmeow/proto/waE2E"
-	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -42,48 +42,52 @@ func u64(n uint64) string {
 func i64(n int64) string {
 	return strconv.FormatInt(n, 10)
 }
+
 type QuotedMessageParams struct {
 	QuoteMessageID string
 	QuoteMessage   string
 	RemoteJID      *types.JID
-	QuotedMessage  *waE2E.Message // Opcional
+	Participant    *types.JID     // JID de quem enviou a mensagem original
+	QuotedMessage  *waE2E.Message // Opcional: protobuf completo
 }
 
 func BuildContextInfoWithQuoted(params QuotedMessageParams) *waE2E.ContextInfo {
-
 	if params.QuoteMessageID == "" {
 		return nil
 	}
 
+	// Limpa prefixo "WAID:" se vier
+	stanzaID := strings.TrimPrefix(params.QuoteMessageID, "WAID:")
+
 	var quotedMsg *waE2E.Message
-
 	if params.QuotedMessage != nil {
-
+		// Melhor caso: protobuf completo disponível
 		quotedMsg = params.QuotedMessage
-
 	} else if params.QuoteMessage != "" {
-
+		// Texto simples disponível
 		quotedMsg = &waE2E.Message{
-			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
-				Text: proto.String(params.QuoteMessage),
-			},
-		}
-
-	} else {
-
-		// ⚠️ IMPORTANTE: precisa ter conteúdo
-		quotedMsg = &waE2E.Message{
-			Conversation: proto.String(" "),
+			Conversation: proto.String(params.QuoteMessage),
 		}
 	}
+	// Se nenhum conteúdo: não define QuotedMessage
+	// O WhatsApp resolve a mensagem pelo StanzaID no dispositivo do destinatário
 
 	contextInfo := &waE2E.ContextInfo{
-		StanzaID:      proto.String(params.QuoteMessageID),
+		StanzaID:      proto.String(stanzaID),
 		QuotedMessage: quotedMsg,
+	}
+
+	// Participant: JID de quem enviou a mensagem original
+	// Essencial para o WhatsApp renderizar o quoted corretamente em grupos
+	if params.Participant != nil {
+		contextInfo.Participant = proto.String(params.Participant.String())
+	} else if params.RemoteJID != nil {
+		contextInfo.Participant = proto.String(params.RemoteJID.String())
 	}
 
 	return contextInfo
 }
+
 func (s *Whatsmiau) getCtx(ctx context.Context, url string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
