@@ -2,6 +2,7 @@ package whatsmiau
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -347,16 +348,12 @@ func (s *Whatsmiau) SendReaction(ctx context.Context, data *SendReactionRequest)
 // ── SendButtons ───────────────────────────────────────────────────────────────
 
 type ButtonItem struct {
-	Type        string `json:"type"`        // "reply" | "copy" | "url" | "call" | "pix"
+	Type        string `json:"type"`        // "reply" | "copy" | "url" | "call"
 	DisplayText string `json:"displayText"`
-	ID          string `json:"id"`
-	CopyCode    string `json:"copyCode"`
-	URL         string `json:"url"`
-	PhoneNumber string `json:"phoneNumber"`
-	Currency    string `json:"currency"`
-	Name        string `json:"name"`
-	KeyType     string `json:"keyType"`
-	Key         string `json:"key"`
+	ID          string `json:"id"`          // reply
+	CopyCode    string `json:"copyCode"`    // copy
+	URL         string `json:"url"`         // url
+	PhoneNumber string `json:"phoneNumber"` // call
 }
 
 type SendButtonsRequest struct {
@@ -376,6 +373,16 @@ type SendButtonsResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// allReply retorna true se todos os botões são do tipo "reply"
+func allReply(buttons []ButtonItem) bool {
+	for _, b := range buttons {
+		if b.Type != "reply" {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Whatsmiau) SendButtons(ctx context.Context, data *SendButtonsRequest) (*SendButtonsResponse, error) {
 	client, ok := s.clients.Load(data.InstanceID)
 	if !ok {
@@ -393,7 +400,80 @@ func (s *Whatsmiau) SendButtons(ctx context.Context, data *SendButtonsRequest) (
 		Participant:    data.Participant,
 	})
 
-	// Monta os botões proto
+	var (
+		msg        *waE2E.Message
+		extraNodes []waBinary.Node
+		err        error
+	)
+
+	if allReply(data.Buttons) {
+		// ── tipo "reply": ButtonsMessage + nodes native_flow ──────────────────
+		msg, err = buildReplyButtons(data, contextInfo)
+		if err != nil {
+			return nil, err
+		}
+		extraNodes = []waBinary.Node{{
+			Tag: "biz",
+			Content: []waBinary.Node{{
+				Tag: "interactive",
+				Attrs: waBinary.Attrs{
+					"type": "native_flow",
+					"v":    "1",
+				},
+				Content: []waBinary.Node{{
+					Tag: "native_flow",
+					Attrs: waBinary.Attrs{
+						"v":    "9",
+						"name": "mixed",
+					},
+				}},
+			}},
+		}}
+	} else {
+		// ── tipos "copy", "url", "call": InteractiveMessage + nodes native_flow
+		msg, err = buildInteractiveButtons(data, contextInfo)
+		if err != nil {
+			return nil, err
+		}
+		extraNodes = []waBinary.Node{{
+			Tag: "biz",
+			Content: []waBinary.Node{{
+				Tag: "interactive",
+				Attrs: waBinary.Attrs{
+					"type": "native_flow",
+					"v":    "1",
+				},
+				Content: []waBinary.Node{{
+					Tag: "native_flow",
+					Attrs: waBinary.Attrs{
+						"v":    "9",
+						"name": "mixed",
+					},
+				}},
+			}},
+		}}
+	}
+
+	res, err := client.SendMessage(ctx, *data.RemoteJID, msg, whatsmeow.SendRequestExtra{
+		AdditionalNodes: &extraNodes,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &SendButtonsResponse{
+		ID:        res.ID,
+		CreatedAt: res.Timestamp,
+	}, nil
+}
+
+// ── ButtonsMessage — tipo "reply" ─────────────────────────────────────────────
+
+func buildReplyButtons(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*waE2E.Message, error) {
+	if len(data.Buttons) > 3 {
+		return nil, fmt.Errorf("buttons reply: máximo 3, recebido %d", len(data.Buttons))
+	}
+
 	protoButtons := make([]*waE2E.ButtonsMessage_Button, 0, len(data.Buttons))
 	for i, b := range data.Buttons {
 		title := strings.TrimSpace(b.DisplayText)
@@ -410,18 +490,14 @@ func (s *Whatsmiau) SendButtons(ctx context.Context, data *SendButtonsRequest) (
 				DisplayText: proto.String(title),
 			},
 			Type:           waE2E.ButtonsMessage_Button_RESPONSE.Enum(),
-			NativeFlowInfo: &waE2E.ButtonsMessage_Button_NativeFlowInfo{}, // obrigatório!
+			NativeFlowInfo: &waE2E.ButtonsMessage_Button_NativeFlowInfo{},
 		})
 	}
 
 	if len(protoButtons) == 0 {
 		return nil, fmt.Errorf("buttons: nenhum botão válido")
 	}
-	if len(protoButtons) > 3 {
-		return nil, fmt.Errorf("buttons: máximo 3 botões, recebido %d", len(protoButtons))
-	}
 
-	// Monta ButtonsMessage
 	buttonsMsg := &waE2E.ButtonsMessage{
 		ContentText: proto.String(data.Description),
 		FooterText:  proto.String(data.Footer),
@@ -430,49 +506,128 @@ func (s *Whatsmiau) SendButtons(ctx context.Context, data *SendButtonsRequest) (
 		ContextInfo: contextInfo,
 	}
 
-	// Header de texto (title) — usa o oneof corretamente
 	if strings.TrimSpace(data.Title) != "" {
 		buttonsMsg.HeaderType = waE2E.ButtonsMessage_TEXT.Enum()
 		buttonsMsg.Header = &waE2E.ButtonsMessage_Text{Text: data.Title}
 	}
 
-	// ✅ CRÍTICO: wrapper FutureProofMessage — sem isso não renderiza no celular
-	msg := &waE2E.Message{
+	// FutureProofMessage wrapper — obrigatório para renderizar no celular
+	return &waE2E.Message{
 		DocumentWithCaptionMessage: &waE2E.FutureProofMessage{
 			Message: &waE2E.Message{
 				ButtonsMessage: buttonsMsg,
 			},
 		},
+	}, nil
+}
+
+// ── InteractiveMessage — tipos "copy", "url", "call" ─────────────────────────
+
+// Params para cada tipo de NativeFlow
+type nativeFlowCopy struct {
+	DisplayText string `json:"display_text"`
+	CopyCode    string `json:"copy_code"`
+}
+
+type nativeFlowURL struct {
+	DisplayText string `json:"display_text"`
+	URL         string `json:"url"`
+	MerchantURL string `json:"merchant_url"`
+}
+
+type nativeFlowCall struct {
+	DisplayText string `json:"display_text"`
+	PhoneNumber string `json:"phone_number"`
+}
+
+func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*waE2E.Message, error) {
+	nativeButtons := make([]*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, 0, len(data.Buttons))
+
+	for i, b := range data.Buttons {
+		displayText := strings.TrimSpace(b.DisplayText)
+		if displayText == "" {
+			continue
+		}
+
+		var flowName string
+		var paramsData any
+
+		switch b.Type {
+		case "copy":
+			if strings.TrimSpace(b.CopyCode) == "" {
+				return nil, fmt.Errorf("botão copy[%d]: campo 'copyCode' obrigatório", i)
+			}
+			flowName = "cta_copy"
+			paramsData = nativeFlowCopy{
+				DisplayText: displayText,
+				CopyCode:    b.CopyCode,
+			}
+		case "url":
+			if strings.TrimSpace(b.URL) == "" {
+				return nil, fmt.Errorf("botão url[%d]: campo 'url' obrigatório", i)
+			}
+			flowName = "cta_url"
+			paramsData = nativeFlowURL{
+				DisplayText: displayText,
+				URL:         b.URL,
+				MerchantURL: b.URL,
+			}
+		case "call":
+			if strings.TrimSpace(b.PhoneNumber) == "" {
+				return nil, fmt.Errorf("botão call[%d]: campo 'phoneNumber' obrigatório", i)
+			}
+			flowName = "cta_call"
+			paramsData = nativeFlowCall{
+				DisplayText: displayText,
+				PhoneNumber: b.PhoneNumber,
+			}
+		default:
+			return nil, fmt.Errorf("botão[%d]: tipo '%s' não suportado em InteractiveMessage", i, b.Type)
+		}
+
+		paramsJSON, err := json.Marshal(paramsData)
+		if err != nil {
+			return nil, fmt.Errorf("botão[%d]: erro ao serializar params: %w", i, err)
+		}
+
+		nativeButtons = append(nativeButtons, &waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
+			Name:             proto.String(flowName),
+			ButtonParamsJSON: proto.String(string(paramsJSON)),
+		})
 	}
 
-	// ✅ CRÍTICO: AdditionalNodes — sem isso o servidor WhatsApp não processa
-	extraNodes := []waBinary.Node{{
-		Tag: "biz",
-		Content: []waBinary.Node{{
-			Tag: "interactive",
-			Attrs: waBinary.Attrs{
-				"type": "native_flow",
-				"v":    "1",
+	if len(nativeButtons) == 0 {
+		return nil, fmt.Errorf("buttons: nenhum botão válido")
+	}
+
+	interactiveMsg := &waE2E.InteractiveMessage{
+		Body: &waE2E.InteractiveMessage_Body{
+			Text: proto.String(data.Description),
+		},
+		Footer: &waE2E.InteractiveMessage_Footer{
+			Text: proto.String(data.Footer),
+		},
+		InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
+			NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
+				Buttons:        nativeButtons,
+				MessageVersion: proto.Int32(1),
 			},
-			Content: []waBinary.Node{{
-				Tag: "native_flow",
-				Attrs: waBinary.Attrs{
-					"v":    "9",
-					"name": "mixed",
-				},
-			}},
-		}},
-	}}
-
-	res, err := client.SendMessage(ctx, *data.RemoteJID, msg, whatsmeow.SendRequestExtra{
-		AdditionalNodes: &extraNodes,
-	})
-	if err != nil {
-		return nil, err
+		},
+		ContextInfo: contextInfo,
 	}
 
-	return &SendButtonsResponse{
-		ID:        res.ID,
-		CreatedAt: res.Timestamp,
+	if strings.TrimSpace(data.Title) != "" {
+		interactiveMsg.Header = &waE2E.InteractiveMessage_Header{
+			Title: proto.String(data.Title),
+		}
+	}
+
+	// FutureProofMessage wrapper — obrigatório para renderizar no celular
+	return &waE2E.Message{
+		DocumentWithCaptionMessage: &waE2E.FutureProofMessage{
+			Message: &waE2E.Message{
+				InteractiveMessage: interactiveMsg,
+			},
+		},
 	}, nil
 }
