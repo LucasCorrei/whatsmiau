@@ -527,26 +527,6 @@ func buildReplyButtons(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo)
 	}, nil
 }
 
-// ── InteractiveMessage — tipos "copy", "url", "call" ─────────────────────────
-
-// Params para cada tipo de NativeFlow
-type nativeFlowCopy struct {
-	DisplayText string `json:"display_text"`
-	CopyCode    string `json:"copy_code"`
-}
-
-type nativeFlowURL struct {
-	DisplayText string `json:"display_text"`
-	URL         string `json:"url"`
-	MerchantURL string `json:"merchant_url"`
-}
-
-type nativeFlowCall struct {
-	DisplayText string `json:"display_text"`
-	PhoneNumber string `json:"phone_number"`
-}
-
-
 // ── Structs para NativeFlow copy/url/call ─────────────────────────────────────
 
 type nativeFlowCopy struct {
