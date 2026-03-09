@@ -205,6 +205,14 @@ type SendButtonsButtonItem struct {
 	Name        string `json:"name"`
 	KeyType     string `json:"keyType"`
 	Key         string `json:"key"`
+    Amount   	int    `json:"amount"` 
+    
+    // Review & Pay
+    Items              []ReviewPayItem `json:"items,omitempty"`
+    Discount           int             `json:"discount,omitempty"`
+    PaymentType        string          `json:"paymentType,omitempty"`
+    AdditionalNote     string          `json:"additionalNote,omitempty"`
+    PaymentInstruction string          `json:"paymentInstruction,omitempty"`
 }
 
 type SendButtonsRequest struct {
