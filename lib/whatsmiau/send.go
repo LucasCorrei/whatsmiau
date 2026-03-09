@@ -545,20 +545,64 @@ type nativeFlowCall struct {
 	PhoneNumber string `json:"phone_number"`
 }
 
+// Estrutura do PIX conforme protocolo WhatsApp
+type pixStaticCode struct {
+	MerchantName string `json:"merchant_name"`
+	Key          string `json:"key"`
+	KeyType      string `json:"key_type"` // PHONE, EMAIL, CPF, CNPJ, EVP
+}
+
+type pixPaymentSetting struct {
+	Type          string        `json:"type"` // "pix_static_code"
+	PixStaticCode pixStaticCode `json:"pix_static_code"`
+}
+
+type pixExternalPaymentConfig struct {
+	PaymentInstruction string `json:"payment_instruction"`
+	Type               string `json:"type"` // "payment_instruction"
+}
+
+type nativeFlowPix struct {
+	PaymentSettings              []pixPaymentSetting        `json:"payment_settings"`
+	ExternalPaymentConfigurations []pixExternalPaymentConfig `json:"external_payment_configurations"`
+	AdditionalNote               string                     `json:"additional_note"`
+	Currency                     string                     `json:"currency"`
+	Type                         string                     `json:"type"` // "physical-goods"
+}
+
+// pixKeyTypeToUpper converte o keyType do usuário para o formato uppercase do WhatsApp
+// random → EVP, phone → PHONE, email → EMAIL, cpf → CPF, cnpj → CNPJ
+func pixKeyTypeToUpper(keyType string) string {
+	switch strings.ToLower(strings.TrimSpace(keyType)) {
+	case "random", "evp", "aleatorio", "aleatório":
+		return "EVP"
+	case "phone", "telefone", "celular":
+		return "PHONE"
+	case "email":
+		return "EMAIL"
+	case "cpf":
+		return "CPF"
+	case "cnpj":
+		return "CNPJ"
+	default:
+		return strings.ToUpper(keyType)
+	}
+}
+
 func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*waE2E.Message, error) {
 	nativeButtons := make([]*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, 0, len(data.Buttons))
 
 	for i, b := range data.Buttons {
 		displayText := strings.TrimSpace(b.DisplayText)
-		if displayText == "" {
-			continue
-		}
 
 		var flowName string
 		var paramsData any
 
 		switch b.Type {
 		case "copy":
+			if displayText == "" {
+				displayText = "Copiar"
+			}
 			if strings.TrimSpace(b.CopyCode) == "" {
 				return nil, fmt.Errorf("botão copy[%d]: campo 'copyCode' obrigatório", i)
 			}
@@ -568,6 +612,9 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 				CopyCode:    b.CopyCode,
 			}
 		case "url":
+			if displayText == "" {
+				displayText = "Abrir link"
+			}
 			if strings.TrimSpace(b.URL) == "" {
 				return nil, fmt.Errorf("botão url[%d]: campo 'url' obrigatório", i)
 			}
@@ -578,6 +625,9 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 				MerchantURL: b.URL,
 			}
 		case "call":
+			if displayText == "" {
+				displayText = "Ligar"
+			}
 			if strings.TrimSpace(b.PhoneNumber) == "" {
 				return nil, fmt.Errorf("botão call[%d]: campo 'phoneNumber' obrigatório", i)
 			}
@@ -585,6 +635,31 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 			paramsData = nativeFlowCall{
 				DisplayText: displayText,
 				PhoneNumber: b.PhoneNumber,
+			}
+		case "pix":
+			if strings.TrimSpace(b.Key) == "" {
+				return nil, fmt.Errorf("botão pix[%d]: campo 'key' obrigatório", i)
+			}
+			if strings.TrimSpace(b.KeyType) == "" {
+				return nil, fmt.Errorf("botão pix[%d]: campo 'keyType' obrigatório (phone, email, cpf, cnpj, random)", i)
+			}
+			flowName = "payment_info"
+			paramsData = nativeFlowPix{
+				PaymentSettings: []pixPaymentSetting{{
+					Type: "pix_static_code",
+					PixStaticCode: pixStaticCode{
+						MerchantName: b.Name,
+						Key:          b.Key,
+						KeyType:      pixKeyTypeToUpper(b.KeyType),
+					},
+				}},
+				ExternalPaymentConfigurations: []pixExternalPaymentConfig{{
+					PaymentInstruction: "",
+					Type:               "payment_instruction",
+				}},
+				AdditionalNote: "",
+				Currency:       "BRL",
+				Type:           "physical-goods",
 			}
 		default:
 			return nil, fmt.Errorf("botão[%d]: tipo '%s' não suportado em InteractiveMessage", i, b.Type)
