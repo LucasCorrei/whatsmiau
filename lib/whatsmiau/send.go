@@ -545,6 +545,7 @@ type nativeFlowCall struct {
 	PhoneNumber string `json:"phone_number"`
 }
 
+
 // Estrutura do PIX conforme protocolo WhatsApp
 type pixStaticCode struct {
 	MerchantName string `json:"merchant_name"`
@@ -552,23 +553,20 @@ type pixStaticCode struct {
 	KeyType      string `json:"key_type"` // PHONE, EMAIL, CPF, CNPJ, EVP
 }
 
-type pixPaymentSetting struct {
-	Type          string        `json:"type"` // "pix_static_code"
-	PixStaticCode pixStaticCode `json:"pix_static_code"`
-}
-
 type pixExternalPaymentConfig struct {
 	PaymentInstruction string `json:"payment_instruction"`
 	Type               string `json:"type"` // "payment_instruction"
 }
 
+// nativeFlowPix usa []any em PaymentSettings para comportar pix_static_code + cards
 type nativeFlowPix struct {
-	PaymentSettings              []pixPaymentSetting        `json:"payment_settings"`
+	PaymentSettings               []any                      `json:"payment_settings"`
 	ExternalPaymentConfigurations []pixExternalPaymentConfig `json:"external_payment_configurations"`
-	AdditionalNote               string                     `json:"additional_note"`
-	Currency                     string                     `json:"currency"`
-	Type                         string                     `json:"type"` // "physical-goods"
+	AdditionalNote                string                     `json:"additional_note"`
+	Currency                      string                     `json:"currency"`
+	Type                          string                     `json:"type"` // "physical-goods"
 }
+
 
 // pixKeyTypeToUpper converte o keyType do usuário para o formato uppercase do WhatsApp
 // random → EVP, phone → PHONE, email → EMAIL, cpf → CPF, cnpj → CNPJ
@@ -645,14 +643,23 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 			}
 			flowName = "payment_info"
 			paramsData = nativeFlowPix{
-				PaymentSettings: []pixPaymentSetting{{
-					Type: "pix_static_code",
-					PixStaticCode: pixStaticCode{
-						MerchantName: b.Name,
-						Key:          b.Key,
-						KeyType:      pixKeyTypeToUpper(b.KeyType),
+				// payment_settings: [pix_static_code, cards] — ambos obrigatórios
+				PaymentSettings: []any{
+					map[string]any{
+						"type": "pix_static_code",
+						"pix_static_code": map[string]any{
+							"merchant_name": b.Name,
+							"key":           b.Key,
+							"key_type":      pixKeyTypeToUpper(b.KeyType),
+						},
 					},
-				}},
+					map[string]any{
+						"type": "cards",
+						"cards": map[string]any{
+							"enabled": false,
+						},
+					},
+				},
 				ExternalPaymentConfigurations: []pixExternalPaymentConfig{{
 					PaymentInstruction: "",
 					Type:               "payment_instruction",
@@ -702,12 +709,13 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 		}
 	}
 
-	// FutureProofMessage wrapper — obrigatório para renderizar no celular
+
+	// InteractiveMessage vai DIRETO no Message — sem FutureProofMessage wrapper
+	// MessageContextInfo com DeviceListMetadataVersion:3 é obrigatório para renderizar
 	return &waE2E.Message{
-		DocumentWithCaptionMessage: &waE2E.FutureProofMessage{
-			Message: &waE2E.Message{
-				InteractiveMessage: interactiveMsg,
-			},
+		MessageContextInfo: &waE2E.MessageContextInfo{
+			DeviceListMetadataVersion: proto.Int32(3),
 		},
+		InteractiveMessage: interactiveMsg,
 	}, nil
 }
