@@ -191,3 +191,54 @@ type SendReactionResponse struct {
 	Source           string             `json:"source,omitempty"`
 	Status           string             `json:"status,omitempty"`
 }
+// ── SendButtons ───────────────────────────────────────────────────────────────
+
+type SendButtonsButtonItem struct {
+	Type        string `json:"type"`        // "reply" | "copy" | "url" | "call" | "pix"
+	DisplayText string `json:"displayText"` // texto visível no botão
+	// reply
+	ID string `json:"id"`
+	// copy
+	CopyCode string `json:"copyCode"`
+	// url
+	URL string `json:"url"`
+	// call
+	PhoneNumber string `json:"phoneNumber"`
+	// pix
+	Currency string `json:"currency"`
+	Name     string `json:"name"`
+	KeyType  string `json:"keyType"`
+	Key      string `json:"key"`
+}
+
+type SendButtonsRequest struct {
+	InstanceID  string                  `json:"instanceId" validate:"required"`
+	Number      string                  `json:"number"     validate:"required"`
+	Title       string                  `json:"title"`
+	Description string                  `json:"description"`
+	Footer      string                  `json:"footer"`
+	Buttons     []SendButtonsButtonItem `json:"buttons"    validate:"required,min=1"`
+	Delay       int                     `json:"delay"`
+	Quoted      *QuotedMessage          `json:"quoted,omitempty"`
+}
+
+// QuotedMessage é reutilizado de outros DTOs (SendTextRequest, SendAudioRequest, etc.)
+// Se já existir em outro arquivo dto, remova daqui.
+type QuotedMessage struct {
+	Key struct {
+		Id string `json:"id"`
+	} `json:"key"`
+	Message *struct {
+		Conversation string `json:"conversation"`
+	} `json:"message,omitempty"`
+}
+
+// ── Response (padrão Evolution API) ──────────────────────────────────────────
+
+type SendButtonsResponse struct {
+	Key              MessageResponseKey `json:"key"`
+	Status           string             `json:"status"`
+	MessageType      string             `json:"messageType"`
+	MessageTimestamp int                `json:"messageTimestamp"`
+	InstanceId       string             `json:"instanceId"`
+}
