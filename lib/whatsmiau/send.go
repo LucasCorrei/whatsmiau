@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"math/rand"
 	"time"
 
 	"go.mau.fi/whatsmeow"
@@ -546,29 +547,62 @@ type nativeFlowCall struct {
 }
 
 
-// Estrutura do PIX conforme protocolo WhatsApp
+// ── Structs para NativeFlow copy/url/call ─────────────────────────────────────
+
+type nativeFlowCopy struct {
+	DisplayText string `json:"display_text"`
+	CopyCode    string `json:"copy_code"`
+}
+
+type nativeFlowURL struct {
+	DisplayText string `json:"display_text"`
+	URL         string `json:"url"`
+	MerchantURL string `json:"merchant_url"`
+}
+
+type nativeFlowCall struct {
+	DisplayText string `json:"display_text"`
+	PhoneNumber string `json:"phone_number"`
+}
+
+// ── Structs para PIX ──────────────────────────────────────────────────────────
+
 type pixStaticCode struct {
 	MerchantName string `json:"merchant_name"`
 	Key          string `json:"key"`
 	KeyType      string `json:"key_type"` // PHONE, EMAIL, CPF, CNPJ, EVP
 }
 
-type pixExternalPaymentConfig struct {
-	PaymentInstruction string `json:"payment_instruction"`
-	Type               string `json:"type"` // "payment_instruction"
+type pixPaymentSetting struct {
+	Type          string        `json:"type"` // "pix_static_code"
+	PixStaticCode pixStaticCode `json:"pix_static_code"`
 }
 
-// nativeFlowPix usa []any em PaymentSettings para comportar pix_static_code + cards
+type pixOrderItem struct {
+	Name       string         `json:"name"`
+	Amount     map[string]any `json:"amount"`
+	Quantity   int            `json:"quantity"`
+	SaleAmount map[string]any `json:"sale_amount"`
+}
+
+type pixOrder struct {
+	Status    string         `json:"status"`    // "pending"
+	Subtotal  map[string]any `json:"subtotal"`
+	OrderType string         `json:"order_type"` // "ORDER"
+	Items     []pixOrderItem `json:"items"`
+}
+
+// nativeFlowPix — payload completo conforme protocolo WhatsApp
 type nativeFlowPix struct {
-	PaymentSettings               []any                      `json:"payment_settings"`
-	ExternalPaymentConfigurations []pixExternalPaymentConfig `json:"external_payment_configurations"`
-	AdditionalNote                string                     `json:"additional_note"`
-	Currency                      string                     `json:"currency"`
-	Type                          string                     `json:"type"` // "physical-goods"
+	Currency        string              `json:"currency"`        // "BRL"
+	TotalAmount     map[string]any      `json:"total_amount"`
+	ReferenceID     string              `json:"reference_id"`
+	Type            string              `json:"type"`            // "physical-goods"
+	Order           pixOrder            `json:"order"`
+	PaymentSettings []pixPaymentSetting `json:"payment_settings"`
 }
 
-
-// pixKeyTypeToUpper converte o keyType do usuário para o formato uppercase do WhatsApp
+// pixKeyTypeToUpper converte keyType do usuário → formato uppercase WhatsApp
 // random → EVP, phone → PHONE, email → EMAIL, cpf → CPF, cnpj → CNPJ
 func pixKeyTypeToUpper(keyType string) string {
 	switch strings.ToLower(strings.TrimSpace(keyType)) {
@@ -587,8 +621,21 @@ func pixKeyTypeToUpper(keyType string) string {
 	}
 }
 
+// generateReferenceID gera um ID aleatório de 11 chars (A-Z0-9)
+func generateReferenceID() string {
+	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	b := make([]byte, 11)
+	for i := range b {
+		b[i] = chars[r.Intn(len(chars))]
+	}
+	return string(b)
+}
+
 func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*waE2E.Message, error) {
 	nativeButtons := make([]*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, 0, len(data.Buttons))
+
+	hasPix := false
 
 	for i, b := range data.Buttons {
 		displayText := strings.TrimSpace(b.DisplayText)
@@ -635,6 +682,7 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 				PhoneNumber: b.PhoneNumber,
 			}
 		case "pix":
+			hasPix = true
 			if strings.TrimSpace(b.Key) == "" {
 				return nil, fmt.Errorf("botão pix[%d]: campo 'key' obrigatório", i)
 			}
@@ -643,33 +691,44 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 			}
 			flowName = "payment_info"
 			paramsData = nativeFlowPix{
-				// payment_settings: [pix_static_code, cards] — ambos obrigatórios
-				PaymentSettings: []any{
-					map[string]any{
-						"type": "pix_static_code",
-						"pix_static_code": map[string]any{
-							"merchant_name": b.Name,
-							"key":           b.Key,
-							"key_type":      pixKeyTypeToUpper(b.KeyType),
-						},
-					},
-					map[string]any{
-						"type": "cards",
-						"cards": map[string]any{
-							"enabled": false,
-						},
-					},
+				Currency: "BRL",
+				TotalAmount: map[string]any{
+					"value":  0,
+					"offset": 100,
 				},
-				ExternalPaymentConfigurations: []pixExternalPaymentConfig{{
-					PaymentInstruction: "",
-					Type:               "payment_instruction",
+				ReferenceID: generateReferenceID(),
+				Type:        "physical-goods",
+				Order: pixOrder{
+					Status: "pending",
+					Subtotal: map[string]any{
+						"value":  0,
+						"offset": 100,
+					},
+					OrderType: "ORDER",
+					Items: []pixOrderItem{{
+						Name: b.Name,
+						Amount: map[string]any{
+							"value":  0,
+							"offset": 100,
+						},
+						Quantity: 0,
+						SaleAmount: map[string]any{
+							"value":  0,
+							"offset": 100,
+						},
+					}},
+				},
+				PaymentSettings: []pixPaymentSetting{{
+					Type: "pix_static_code",
+					PixStaticCode: pixStaticCode{
+						MerchantName: b.Name,
+						Key:          b.Key,
+						KeyType:      pixKeyTypeToUpper(b.KeyType),
+					},
 				}},
-				AdditionalNote: "",
-				Currency:       "BRL",
-				Type:           "physical-goods",
 			}
 		default:
-			return nil, fmt.Errorf("botão[%d]: tipo '%s' não suportado em InteractiveMessage", i, b.Type)
+			return nil, fmt.Errorf("botão[%d]: tipo '%s' não suportado", i, b.Type)
 		}
 
 		paramsJSON, err := json.Marshal(paramsData)
@@ -687,6 +746,9 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 		return nil, fmt.Errorf("buttons: nenhum botão válido")
 	}
 
+	// messageParamsJSON obrigatório para PIX renderizar
+	messageParamsJSON := fmt.Sprintf(`{"from":"api","templateId":"%s"}`, generateReferenceID())
+
 	interactiveMsg := &waE2E.InteractiveMessage{
 		Body: &waE2E.InteractiveMessage_Body{
 			Text: proto.String(data.Description),
@@ -696,8 +758,9 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 		},
 		InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
 			NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
-				Buttons:        nativeButtons,
-				MessageVersion: proto.Int32(1),
+				Buttons:           nativeButtons,
+				MessageVersion:    proto.Int32(1),
+				MessageParamsJSON: proto.String(messageParamsJSON),
 			},
 		},
 		ContextInfo: contextInfo,
@@ -709,13 +772,22 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 		}
 	}
 
-
-	// InteractiveMessage vai DIRETO no Message — sem FutureProofMessage wrapper
-	// MessageContextInfo com DeviceListMetadataVersion:3 é obrigatório para renderizar
-	return &waE2E.Message{
-		MessageContextInfo: &waE2E.MessageContextInfo{
-			DeviceListMetadataVersion: proto.Int32(3),
-		},
+	innerMsg := &waE2E.Message{
 		InteractiveMessage: interactiveMsg,
+	}
+
+	// PIX precisa de viewOnceMessage como wrapper — copy/url/call usam FutureProofMessage
+	if hasPix {
+		return &waE2E.Message{
+			ViewOnceMessage: &waE2E.FutureProofMessage{
+				Message: innerMsg,
+			},
+		}, nil
+	}
+
+	return &waE2E.Message{
+		DocumentWithCaptionMessage: &waE2E.FutureProofMessage{
+			Message: innerMsg,
+		},
 	}, nil
 }
