@@ -62,7 +62,7 @@ func (s *Message) SendText(ctx echo.Context) error {
 	}); err != nil {
 		zap.L().Error("Whatsmiau.ChatPresence", zap.Error(err))
 	} else {
-		time.Sleep(time.Millisecond * time.Duration(request.Delay)) // TODO: create a more robust solution
+		time.Sleep(time.Millisecond * time.Duration(request.Delay))
 	}
 
 	res, err := s.whatsmiau.SendText(c, sendText)
@@ -123,7 +123,7 @@ func (s *Message) SendAudio(ctx echo.Context) error {
 	}); err != nil {
 		zap.L().Error("Whatsmiau.ChatPresence", zap.Error(err))
 	} else {
-		time.Sleep(time.Millisecond * time.Duration(request.Delay)) // TODO: create a more robust solution
+		time.Sleep(time.Millisecond * time.Duration(request.Delay))
 	}
 
 	res, err := s.whatsmiau.SendAudio(c, sendText)
@@ -138,7 +138,6 @@ func (s *Message) SendAudio(ctx echo.Context) error {
 			FromMe:    true,
 			Id:        res.ID,
 		},
-
 		Status:           "sent",
 		MessageType:      "audioMessage",
 		MessageTimestamp: int(res.CreatedAt.Unix() / 1000),
@@ -195,7 +194,7 @@ func (s *Message) sendDocument(ctx echo.Context, request dto.SendDocumentRequest
 	}
 
 	c := ctx.Request().Context()
-	time.Sleep(time.Millisecond * time.Duration(request.Delay)) // TODO: create a more robust solution
+	time.Sleep(time.Millisecond * time.Duration(request.Delay))
 
 	res, err := s.whatsmiau.SendDocument(c, sendData)
 	if err != nil {
@@ -245,7 +244,7 @@ func (s *Message) sendImage(ctx echo.Context, request dto.SendDocumentRequest) e
 	}
 
 	c := ctx.Request().Context()
-	time.Sleep(time.Millisecond * time.Duration(request.Delay)) // TODO: create a more robust solution
+	time.Sleep(time.Millisecond * time.Duration(request.Delay))
 
 	res, err := s.whatsmiau.SendImage(c, sendData)
 	if err != nil {
@@ -314,6 +313,9 @@ func (s *Message) SendReaction(ctx echo.Context) error {
 		InstanceId:       request.InstanceID,
 	})
 }
+
+// ── SendButtons ───────────────────────────────────────────────────────────────
+
 func (s *Message) SendButtons(ctx echo.Context) error {
 	var request dto.SendButtonsRequest
 	if err := ctx.Bind(&request); err != nil {
@@ -330,7 +332,6 @@ func (s *Message) SendButtons(ctx echo.Context) error {
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid number format")
 	}
 
-	// Converte os ButtonItems do DTO para o tipo do pacote whatsmiau
 	buttons := make([]whatsmiau.ButtonItem, 0, len(request.Buttons))
 	for _, b := range request.Buttons {
 		buttons = append(buttons, whatsmiau.ButtonItem{
@@ -356,12 +357,9 @@ func (s *Message) SendButtons(ctx echo.Context) error {
 		Buttons:     buttons,
 	}
 
-	// Quoted opcional — mesmo padrão do SendText
 	if request.Quoted != nil && len(request.Quoted.Key.Id) > 0 {
 		sendData.QuoteMessageID = request.Quoted.Key.Id
-		if request.Quoted.Message != nil {
-			sendData.QuoteMessage = request.Quoted.Message.Conversation
-		}
+		sendData.QuoteMessage = request.Quoted.Message.Conversation
 	}
 
 	c := ctx.Request().Context()
