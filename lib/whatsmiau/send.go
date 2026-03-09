@@ -2,13 +2,13 @@ package whatsmiau
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"time"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
-	//"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
 )
@@ -36,7 +36,6 @@ func (s *Whatsmiau) SendText(ctx context.Context, data *SendText) (*SendTextResp
 
 	var message *waE2E.Message
 
-	// 🎯 USAR O HELPER
 	contextInfo := BuildContextInfoWithQuoted(QuotedMessageParams{
 		QuoteMessageID: data.QuoteMessageID,
 		QuoteMessage:   data.QuoteMessage,
@@ -68,12 +67,12 @@ func (s *Whatsmiau) SendText(ctx context.Context, data *SendText) (*SendTextResp
 }
 
 type SendAudioRequest struct {
-	AudioURL       string     `json:"text"`
-	InstanceID     string     `json:"instance_id"`
-	RemoteJID      *types.JID `json:"remote_jid"`
-	QuoteMessageID string     `json:"quote_message_id"`
-	QuoteMessage   string     `json:"quote_message"`
-	QuotedMessage  *waE2E.Message `json:"quoted_message,omitempty"` // Opcional: mensagem quotada completa
+	AudioURL       string         `json:"text"`
+	InstanceID     string         `json:"instance_id"`
+	RemoteJID      *types.JID     `json:"remote_jid"`
+	QuoteMessageID string         `json:"quote_message_id"`
+	QuoteMessage   string         `json:"quote_message"`
+	QuotedMessage  *waE2E.Message `json:"quoted_message,omitempty"`
 }
 
 type SendAudioResponse struct {
@@ -87,7 +86,6 @@ func (s *Whatsmiau) SendAudio(ctx context.Context, data *SendAudioRequest) (*Sen
 		return nil, whatsmeow.ErrClientIsNil
 	}
 
-	// Baixar o áudio da URL
 	resAudio, err := s.getCtx(ctx, data.AudioURL)
 	if err != nil {
 		return nil, err
@@ -98,19 +96,16 @@ func (s *Whatsmiau) SendAudio(ctx context.Context, data *SendAudioRequest) (*Sen
 		return nil, err
 	}
 
-	// Converter o áudio
 	audioData, waveForm, secs, err := convertAudio(dataBytes, 64)
 	if err != nil {
 		return nil, err
 	}
 
-	// Upload do áudio
 	uploaded, err := client.Upload(ctx, audioData, whatsmeow.MediaAudio)
 	if err != nil {
 		return nil, err
 	}
 
-	// Criar a mensagem de áudio
 	audio := &waE2E.AudioMessage{
 		URL:           proto.String(uploaded.URL),
 		Mimetype:      proto.String("audio/ogg; codecs=opus"),
@@ -124,7 +119,6 @@ func (s *Whatsmiau) SendAudio(ctx context.Context, data *SendAudioRequest) (*Sen
 		Waveform:      waveForm,
 	}
 
-	// Adicionar suporte a quoted message usando o helper
 	contextInfo := BuildContextInfoWithQuoted(QuotedMessageParams{
 		QuoteMessageID: data.QuoteMessageID,
 		QuoteMessage:   data.QuoteMessage,
@@ -136,7 +130,6 @@ func (s *Whatsmiau) SendAudio(ctx context.Context, data *SendAudioRequest) (*Sen
 		audio.ContextInfo = contextInfo
 	}
 
-	// Enviar a mensagem
 	res, err := client.SendMessage(ctx, *data.RemoteJID, &waE2E.Message{
 		AudioMessage: audio,
 	})
@@ -200,7 +193,6 @@ func (s *Whatsmiau) SendDocument(ctx context.Context, data *SendDocumentRequest)
 		Caption:       proto.String(data.Caption),
 	}
 
-	// Adicionar suporte a quoted message
 	contextInfo := BuildContextInfoWithQuoted(QuotedMessageParams{
 		QuoteMessageID: data.QuoteMessageID,
 		QuoteMessage:   data.QuoteMessage,
@@ -280,7 +272,6 @@ func (s *Whatsmiau) SendImage(ctx context.Context, data *SendImageRequest) (*Sen
 		DirectPath:    proto.String(uploaded.DirectPath),
 	}
 
-	// Adicionar suporte a quoted message
 	contextInfo := BuildContextInfoWithQuoted(QuotedMessageParams{
 		QuoteMessageID: data.QuoteMessageID,
 		QuoteMessage:   data.QuoteMessage,
@@ -348,7 +339,211 @@ func (s *Whatsmiau) SendReaction(ctx context.Context, data *SendReactionRequest)
 	}
 
 	return &SendReactionResponse{
-	ID:        res.ID,
-	CreatedAt: res.Timestamp,
+		ID:        res.ID,
+		CreatedAt: res.Timestamp,
 	}, nil
+}
+
+// ── SendButtons ───────────────────────────────────────────────────────────────
+
+type ButtonItem struct {
+	Type        string `json:"type"`        // "reply" | "copy" | "url" | "call" | "pix"
+	DisplayText string `json:"displayText"`
+	ID          string `json:"id"`
+	CopyCode    string `json:"copyCode"`
+	URL         string `json:"url"`
+	PhoneNumber string `json:"phoneNumber"`
+	Currency    string `json:"currency"`
+	Name        string `json:"name"`
+	KeyType     string `json:"keyType"`
+	Key         string `json:"key"`
+}
+
+type SendButtonsRequest struct {
+	InstanceID     string       `json:"instance_id"`
+	RemoteJID      *types.JID   `json:"remote_jid"`
+	Title          string       `json:"title"`
+	Description    string       `json:"description"`
+	Footer         string       `json:"footer"`
+	Buttons        []ButtonItem `json:"buttons"`
+	QuoteMessageID string       `json:"quote_message_id"`
+	QuoteMessage   string       `json:"quote_message"`
+	Participant    *types.JID   `json:"participant"`
+}
+
+type SendButtonsResponse struct {
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (s *Whatsmiau) SendButtons(ctx context.Context, data *SendButtonsRequest) (*SendButtonsResponse, error) {
+	client, ok := s.clients.Load(data.InstanceID)
+	if !ok {
+		return nil, whatsmeow.ErrClientIsNil
+	}
+
+	if len(data.Buttons) == 0 {
+		return nil, fmt.Errorf("buttons: lista vazia")
+	}
+
+	contextInfo := BuildContextInfoWithQuoted(QuotedMessageParams{
+		QuoteMessageID: data.QuoteMessageID,
+		QuoteMessage:   data.QuoteMessage,
+		RemoteJID:      data.RemoteJID,
+		Participant:    data.Participant,
+	})
+
+	var msg *waE2E.Message
+	var err error
+
+	if allReply(data.Buttons) {
+		msg, err = buildReplyButtonsMessage(data, contextInfo)
+	} else {
+		msg, err = buildInteractiveButtonsMessage(data, contextInfo)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := client.SendMessage(ctx, *data.RemoteJID, msg)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SendButtonsResponse{
+		ID:        res.ID,
+		CreatedAt: res.Timestamp,
+	}, nil
+}
+
+func allReply(buttons []ButtonItem) bool {
+	for _, b := range buttons {
+		if b.Type != "reply" {
+			return false
+		}
+	}
+	return true
+}
+
+func buildReplyButtonsMessage(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*waE2E.Message, error) {
+	if len(data.Buttons) > 3 {
+		return nil, fmt.Errorf("buttons reply: máximo 3, recebido %d", len(data.Buttons))
+	}
+
+	protoButtons := make([]*waE2E.ButtonsMessage_Button, 0, len(data.Buttons))
+	for i, b := range data.Buttons {
+		id := b.ID
+		if id == "" {
+			id = fmt.Sprintf("btn_%d", i)
+		}
+		protoButtons = append(protoButtons, &waE2E.ButtonsMessage_Button{
+			ButtonID: proto.String(id),
+			ButtonText: &waE2E.ButtonsMessage_Button_ButtonText{
+				DisplayText: proto.String(b.DisplayText),
+			},
+			Type: waE2E.ButtonsMessage_Button_RESPONSE.Enum(),
+		})
+	}
+
+	return &waE2E.Message{
+		ButtonsMessage: &waE2E.ButtonsMessage{
+			Text:        proto.String(data.Title),
+			ContentText: proto.String(data.Description),
+			FooterText:  proto.String(data.Footer),
+			Buttons:     protoButtons,
+			HeaderType:  waE2E.ButtonsMessage_TEXT.Enum(),
+			ContextInfo: contextInfo,
+		},
+	}, nil
+}
+
+type nativeFlowParams struct {
+	DisplayText string `json:"display_text"`
+	URL         string `json:"url,omitempty"`
+	MerchantURL string `json:"merchant_url,omitempty"`
+	PhoneNumber string `json:"phone_number,omitempty"`
+	CopyCode    string `json:"copy_code,omitempty"`
+	Currency    string `json:"currency,omitempty"`
+	Name        string `json:"name,omitempty"`
+	KeyType     string `json:"key_type,omitempty"`
+	Key         string `json:"key,omitempty"`
+}
+
+func buildInteractiveButtonsMessage(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*waE2E.Message, error) {
+	nativeButtons := make([]*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, 0, len(data.Buttons))
+
+	for i, b := range data.Buttons {
+		flowName, params, err := resolveNativeFlow(i, b)
+		if err != nil {
+			return nil, err
+		}
+		paramsJSON, err := json.Marshal(params)
+		if err != nil {
+			return nil, fmt.Errorf("buttons: serializar params: %w", err)
+		}
+		nativeButtons = append(nativeButtons, &waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
+			Name:             proto.String(flowName),
+			ButtonParamsJSON: proto.String(string(paramsJSON)),
+		})
+	}
+
+	return &waE2E.Message{
+		InteractiveMessage: &waE2E.InteractiveMessage{
+			Header: &waE2E.InteractiveMessage_Header{
+				Title: proto.String(data.Title),
+			},
+			Body: &waE2E.InteractiveMessage_Body{
+				Text: proto.String(data.Description),
+			},
+			Footer: &waE2E.InteractiveMessage_Footer{
+				Text: proto.String(data.Footer),
+			},
+			InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
+				NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
+					Buttons:        nativeButtons,
+					MessageVersion: proto.Int32(1),
+				},
+			},
+			ContextInfo: contextInfo,
+		},
+	}, nil
+}
+
+func resolveNativeFlow(idx int, b ButtonItem) (string, nativeFlowParams, error) {
+	p := nativeFlowParams{DisplayText: b.DisplayText}
+
+	switch b.Type {
+	case "reply":
+		return "quick_reply", p, nil
+	case "url":
+		if b.URL == "" {
+			return "", p, fmt.Errorf("botão url[%d]: campo 'url' obrigatório", idx)
+		}
+		p.URL = b.URL
+		p.MerchantURL = b.URL
+		return "cta_url", p, nil
+	case "call":
+		if b.PhoneNumber == "" {
+			return "", p, fmt.Errorf("botão call[%d]: campo 'phoneNumber' obrigatório", idx)
+		}
+		p.PhoneNumber = b.PhoneNumber
+		return "cta_call", p, nil
+	case "copy":
+		if b.CopyCode == "" {
+			return "", p, fmt.Errorf("botão copy[%d]: campo 'copyCode' obrigatório", idx)
+		}
+		p.CopyCode = b.CopyCode
+		return "cta_copy", p, nil
+	case "pix":
+		if b.Key == "" {
+			return "", p, fmt.Errorf("botão pix[%d]: campo 'key' obrigatório", idx)
+		}
+		p.Currency = b.Currency
+		p.Name = b.Name
+		p.KeyType = b.KeyType
+		p.Key = b.Key
+		return "payment_info", p, nil
+	default:
+		return "", p, fmt.Errorf("botão[%d]: tipo '%s' desconhecido", idx, b.Type)
+	}
 }
