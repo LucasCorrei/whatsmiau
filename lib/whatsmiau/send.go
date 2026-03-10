@@ -935,6 +935,16 @@ func buildPayButton(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*
 	}
 
 	interactiveMsg := &waE2E.InteractiveMessage{
+		Header: &waE2E.InteractiveMessage_Header{
+			Title:              proto.String(data.Title),
+			HasMediaAttachment: proto.Bool(false),
+		},
+		Body: &waE2E.InteractiveMessage_Body{
+			Text: proto.String(data.Description),
+		},
+		Footer: &waE2E.InteractiveMessage_Footer{
+			Text: proto.String(data.Footer),
+		},
 		InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
 			NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
 				MessageVersion: proto.Int32(1),
