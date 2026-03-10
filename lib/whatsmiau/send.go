@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
+	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	//"go.mau.fi/whatsmeow/proto/waCommon"
@@ -355,6 +357,11 @@ func (s *Whatsmiau) SendReaction(ctx context.Context, data *SendReactionRequest)
 
 // =============================================================================
 // BUTTONS
+// Ref: whatsmeow-buttons-lists.md
+// Chaves:
+//   1. Wrapper obrigatório: DocumentWithCaptionMessage > FutureProofMessage
+//   2. AdditionalNodes: biz > interactive(native_flow,v=1) > native_flow(v=9,name=mixed)
+//   3. NativeFlowInfo vazio obrigatório em cada botão RESPONSE
 // =============================================================================
 
 type ButtonItem struct {
@@ -397,63 +404,51 @@ func (s *Whatsmiau) SendButtons(ctx context.Context, data *SendButtonsRequest) (
 		return nil, fmt.Errorf("at least one button is required")
 	}
 
+	// Montar botões
 	protoButtons := make([]*waE2E.ButtonsMessage_Button, 0, len(data.Buttons))
-	for i, b := range data.Buttons {
-		btn := &waE2E.ButtonsMessage_Button{
-			ButtonID: proto.String(fmt.Sprintf("btn_%d", i)),
+	for _, b := range data.Buttons {
+		displayText := strings.TrimSpace(b.DisplayText)
+		if displayText == "" {
+			continue
+		}
+
+		buttonID := strings.TrimSpace(b.ID)
+		if buttonID == "" {
+			buttonID = displayText
+		}
+
+		protoButtons = append(protoButtons, &waE2E.ButtonsMessage_Button{
+			ButtonID: proto.String(buttonID),
 			ButtonText: &waE2E.ButtonsMessage_Button_ButtonText{
-				DisplayText: proto.String(b.DisplayText),
+				DisplayText: proto.String(displayText),
 			},
-		}
-
-		switch b.Type {
-		case "url":
-			btn.Type = waE2E.ButtonsMessage_Button_NATIVE_FLOW.Enum()
-			btn.NativeFlowInfo = &waE2E.ButtonsMessage_Button_NativeFlowInfo{
-				Name:       proto.String("cta_url"),
-				ParamsJSON: proto.String(fmt.Sprintf(`{"display_text":%q,"url":%q,"merchant_url":%q}`, b.DisplayText, b.URL, b.URL)),
-			}
-		case "copy":
-			btn.Type = waE2E.ButtonsMessage_Button_NATIVE_FLOW.Enum()
-			btn.NativeFlowInfo = &waE2E.ButtonsMessage_Button_NativeFlowInfo{
-				Name:       proto.String("cta_copy"),
-				ParamsJSON: proto.String(fmt.Sprintf(`{"display_text":%q,"copy_code":%q}`, b.DisplayText, b.CopyCode)),
-			}
-		case "call":
-			btn.Type = waE2E.ButtonsMessage_Button_NATIVE_FLOW.Enum()
-			btn.NativeFlowInfo = &waE2E.ButtonsMessage_Button_NativeFlowInfo{
-				Name:       proto.String("cta_call"),
-				ParamsJSON: proto.String(fmt.Sprintf(`{"display_text":%q,"phone_number":%q}`, b.DisplayText, b.PhoneNumber)),
-			}
-		case "pix":
-			btn.Type = waE2E.ButtonsMessage_Button_NATIVE_FLOW.Enum()
-			btn.NativeFlowInfo = &waE2E.ButtonsMessage_Button_NativeFlowInfo{
-				Name:       proto.String("send_payment"),
-				ParamsJSON: proto.String(fmt.Sprintf(`{"currency":%q,"name":%q,"key_type":%q,"key":%q}`, b.Currency, b.Name, b.KeyType, b.Key)),
-			}
-		default: // "reply"
-			if b.ID != "" {
-				btn.ButtonID = proto.String(b.ID)
-			}
-			btn.Type = waE2E.ButtonsMessage_Button_RESPONSE.Enum()
-		}
-
-		protoButtons = append(protoButtons, btn)
+			// RESPONSE + NativeFlowInfo vazio são obrigatórios para renderizar
+			Type:           waE2E.ButtonsMessage_Button_RESPONSE.Enum(),
+			NativeFlowInfo: &waE2E.ButtonsMessage_Button_NativeFlowInfo{},
+		})
 	}
 
-	btnsMsg := &waE2E.ButtonsMessage{
+	if len(protoButtons) == 0 {
+		return nil, fmt.Errorf("valid buttons are required")
+	}
+
+	// Montar ButtonsMessage
+	buttonsMsg := &waE2E.ButtonsMessage{
 		ContentText: proto.String(data.Description),
-		FooterText:  proto.String(data.Footer),
-		HeaderType:  waE2E.ButtonsMessage_TEXT.Enum(),
+		HeaderType:  waE2E.ButtonsMessage_EMPTY.Enum(),
 		Buttons:     protoButtons,
 	}
 
 	if data.Title != "" {
-		btnsMsg.Header = &waE2E.ButtonsMessage_Text{
-			Text: data.Title,
-		}
+		buttonsMsg.HeaderType = waE2E.ButtonsMessage_TEXT.Enum()
+		buttonsMsg.Header = &waE2E.ButtonsMessage_Text{Text: data.Title}
 	}
 
+	if data.Footer != "" {
+		buttonsMsg.FooterText = proto.String(data.Footer)
+	}
+
+	// Quoted message
 	contextInfo := BuildContextInfoWithQuoted(QuotedMessageParams{
 		QuoteMessageID: data.QuoteMessageID,
 		QuoteMessage:   data.QuoteMessage,
@@ -461,11 +456,39 @@ func (s *Whatsmiau) SendButtons(ctx context.Context, data *SendButtonsRequest) (
 		QuotedMessage:  data.QuotedMessage,
 	})
 	if contextInfo != nil {
-		btnsMsg.ContextInfo = contextInfo
+		buttonsMsg.ContextInfo = contextInfo
 	}
 
-	res, err := client.SendMessage(ctx, *data.RemoteJID, &waE2E.Message{
-		ButtonsMessage: btnsMsg,
+	// WRAPPER obrigatório: DocumentWithCaptionMessage > FutureProofMessage
+	message := &waE2E.Message{
+		DocumentWithCaptionMessage: &waE2E.FutureProofMessage{
+			Message: &waE2E.Message{
+				ButtonsMessage: buttonsMsg,
+			},
+		},
+	}
+
+	// AdditionalNodes obrigatórios para o WhatsApp processar como interactive
+	extraNodes := []waBinary.Node{{
+		Tag: "biz",
+		Content: []waBinary.Node{{
+			Tag: "interactive",
+			Attrs: waBinary.Attrs{
+				"type": "native_flow",
+				"v":    "1",
+			},
+			Content: []waBinary.Node{{
+				Tag: "native_flow",
+				Attrs: waBinary.Attrs{
+					"v":    "9",
+					"name": "mixed",
+				},
+			}},
+		}},
+	}}
+
+	res, err := client.SendMessage(ctx, *data.RemoteJID, message, whatsmeow.SendRequestExtra{
+		AdditionalNodes: &extraNodes,
 	})
 	if err != nil {
 		return nil, err
@@ -489,13 +512,13 @@ type SendPaymentRequest struct {
 	QuoteMessage   string         `json:"quote_message"`
 	QuotedMessage  *waE2E.Message `json:"quoted_message,omitempty"`
 
-	OrderID     string `json:"order_id"`     // ex: "RAP1773090286620"
+	OrderID     string `json:"order_id"`
 	TotalAmount int64  `json:"total_amount"` // centavos, ex: 100 = R$1,00
-	Currency    string `json:"currency"`     // ex: "BRL"
-	ItemCount   int32  `json:"item_count"`   // padrão: 1
+	Currency    string `json:"currency"`
+	ItemCount   int32  `json:"item_count"`
 	OrderTitle  string `json:"order_title"`
-	Message     string `json:"message"`    // nome do vendedor
-	SellerJID   string `json:"seller_jid"` // ex: "5587811484538@s.whatsapp.net"
+	Message     string `json:"message"`
+	SellerJID   string `json:"seller_jid"`
 }
 
 type SendPaymentResponse struct {
