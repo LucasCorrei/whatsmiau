@@ -195,8 +195,17 @@ type SendReactionResponse struct {
 
 // ── SendButtons ───────────────────────────────────────────────────────────────
 
+// SendButtonsPayOrderItem representa um item do pedido no Review and Pay
+type SendButtonsPayOrderItem struct {
+	Name       string `json:"name"`
+	Amount     int    `json:"amount"`   // em centavos
+	Quantity   int    `json:"quantity"` // default: 1
+	ProductID  string `json:"productId"`
+	RetailerID string `json:"retailerId"`
+}
+
 type SendButtonsButtonItem struct {
-	Type        string `json:"type"`        // "reply" | "copy" | "url" | "call" | "pix"
+	Type        string `json:"type"`        // "reply" | "copy" | "url" | "call" | "pix" | "pay"
 	DisplayText string `json:"displayText"` // texto visível no botão
 	// reply
 	ID string `json:"id"`
@@ -206,11 +215,20 @@ type SendButtonsButtonItem struct {
 	URL string `json:"url"`
 	// call
 	PhoneNumber string `json:"phoneNumber"`
-	// pix
+	// pix / pay
 	Currency string `json:"currency"`
 	Name     string `json:"name"`
 	KeyType  string `json:"keyType"`
 	Key      string `json:"key"`
+	Amount   int    `json:"amount"`
+	ItemName string `json:"itemName"`
+	// pay (review_and_pay) — campos adicionais
+	Items              []SendButtonsPayOrderItem `json:"items"`
+	Discount           int                       `json:"discount"`
+	TotalValue         int                       `json:"totalValue"`
+	AdditionalNote     string                    `json:"additionalNote"`
+	PaymentInstruction string                    `json:"paymentInstruction"`
+	ReferenceID        string                    `json:"referenceId"`
 }
 
 type SendButtonsRequest struct {
