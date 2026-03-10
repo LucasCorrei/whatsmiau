@@ -36,6 +36,7 @@ func (s *Whatsmiau) SendText(ctx context.Context, data *SendText) (*SendTextResp
 
 	var message *waE2E.Message
 
+	// 🎯 USAR O HELPER
 	contextInfo := BuildContextInfoWithQuoted(QuotedMessageParams{
 		QuoteMessageID: data.QuoteMessageID,
 		QuoteMessage:   data.QuoteMessage,
@@ -72,7 +73,7 @@ type SendAudioRequest struct {
 	RemoteJID      *types.JID     `json:"remote_jid"`
 	QuoteMessageID string         `json:"quote_message_id"`
 	QuoteMessage   string         `json:"quote_message"`
-	QuotedMessage  *waE2E.Message `json:"quoted_message,omitempty"`
+	QuotedMessage  *waE2E.Message `json:"quoted_message,omitempty"` // Opcional: mensagem quotada completa
 }
 
 type SendAudioResponse struct {
@@ -86,6 +87,7 @@ func (s *Whatsmiau) SendAudio(ctx context.Context, data *SendAudioRequest) (*Sen
 		return nil, whatsmeow.ErrClientIsNil
 	}
 
+	// Baixar o áudio da URL
 	resAudio, err := s.getCtx(ctx, data.AudioURL)
 	if err != nil {
 		return nil, err
@@ -96,16 +98,19 @@ func (s *Whatsmiau) SendAudio(ctx context.Context, data *SendAudioRequest) (*Sen
 		return nil, err
 	}
 
+	// Converter o áudio
 	audioData, waveForm, secs, err := convertAudio(dataBytes, 64)
 	if err != nil {
 		return nil, err
 	}
 
+	// Upload do áudio
 	uploaded, err := client.Upload(ctx, audioData, whatsmeow.MediaAudio)
 	if err != nil {
 		return nil, err
 	}
 
+	// Criar a mensagem de áudio
 	audio := &waE2E.AudioMessage{
 		URL:           proto.String(uploaded.URL),
 		Mimetype:      proto.String("audio/ogg; codecs=opus"),
@@ -119,6 +124,7 @@ func (s *Whatsmiau) SendAudio(ctx context.Context, data *SendAudioRequest) (*Sen
 		Waveform:      waveForm,
 	}
 
+	// Adicionar suporte a quoted message usando o helper
 	contextInfo := BuildContextInfoWithQuoted(QuotedMessageParams{
 		QuoteMessageID: data.QuoteMessageID,
 		QuoteMessage:   data.QuoteMessage,
@@ -130,6 +136,7 @@ func (s *Whatsmiau) SendAudio(ctx context.Context, data *SendAudioRequest) (*Sen
 		audio.ContextInfo = contextInfo
 	}
 
+	// Enviar a mensagem
 	res, err := client.SendMessage(ctx, *data.RemoteJID, &waE2E.Message{
 		AudioMessage: audio,
 	})
@@ -193,6 +200,7 @@ func (s *Whatsmiau) SendDocument(ctx context.Context, data *SendDocumentRequest)
 		Caption:       proto.String(data.Caption),
 	}
 
+	// Adicionar suporte a quoted message
 	contextInfo := BuildContextInfoWithQuoted(QuotedMessageParams{
 		QuoteMessageID: data.QuoteMessageID,
 		QuoteMessage:   data.QuoteMessage,
@@ -272,6 +280,7 @@ func (s *Whatsmiau) SendImage(ctx context.Context, data *SendImageRequest) (*Sen
 		DirectPath:    proto.String(uploaded.DirectPath),
 	}
 
+	// Adicionar suporte a quoted message
 	contextInfo := BuildContextInfoWithQuoted(QuotedMessageParams{
 		QuoteMessageID: data.QuoteMessageID,
 		QuoteMessage:   data.QuoteMessage,
@@ -345,160 +354,10 @@ func (s *Whatsmiau) SendReaction(ctx context.Context, data *SendReactionRequest)
 }
 
 // =============================================================================
-// BUTTONS
-// Baseado em waE2E.ButtonsMessage do proto WAWebProtobufsE2E.proto
-// Tipos de botão suportados: "reply" (RESPONSE) e "url" / "copy" / "call"
-// via NativeFlowInfo (NATIVE_FLOW).
+// PAYMENT — "Revisar e pagar"
+// Proto: waE2E.OrderMessage (WAWebProtobufsE2E.proto)
 // =============================================================================
 
-// ButtonItem representa um botão individual na mensagem.
-//
-// Para botão de resposta simples (type="reply"):
-//   - DisplayText: texto do botão
-//   - ID: id retornado quando clicado
-//
-// Para botões especiais (type="url", "copy", "call") via NativeFlow:
-//   - URL:         link a abrir (type="url")
-//   - CopyCode:    texto a copiar (type="copy")
-//   - PhoneNumber: número a ligar (type="call")
-//   - Currency / Name / KeyType / Key: para pagamento Pix (type="pix")
-type ButtonItem struct {
-	Type        string `json:"type"`         // "reply" | "url" | "copy" | "call" | "pix"
-	DisplayText string `json:"displayText"`  // texto exibido no botão
-	ID          string `json:"id"`           // id do botão (type="reply")
-	URL         string `json:"url"`          // (type="url")
-	CopyCode    string `json:"copyCode"`     // (type="copy")
-	PhoneNumber string `json:"phoneNumber"`  // (type="call")
-	Currency    string `json:"currency"`     // (type="pix")
-	Name        string `json:"name"`         // (type="pix") nome do recebedor
-	KeyType     string `json:"keyType"`      // (type="pix") tipo da chave
-	Key         string `json:"key"`          // (type="pix") chave pix
-}
-
-// SendButtonsRequest envia uma mensagem com botões interativos.
-type SendButtonsRequest struct {
-	InstanceID     string         `json:"instance_id"`
-	RemoteJID      *types.JID     `json:"remote_jid"`
-	QuoteMessageID string         `json:"quote_message_id"`
-	QuoteMessage   string         `json:"quote_message"`
-	QuotedMessage  *waE2E.Message `json:"quoted_message,omitempty"`
-
-	Title       string       `json:"title"`       // cabeçalho (texto)
-	Description string       `json:"description"` // corpo da mensagem
-	Footer      string       `json:"footer"`      // rodapé
-	Buttons     []ButtonItem `json:"buttons"`
-}
-
-// SendButtonsResponse retorna o ID e timestamp da mensagem enviada.
-type SendButtonsResponse struct {
-	ID        string    `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-// SendButtons envia uma mensagem com botões interativos usando waE2E.ButtonsMessage.
-func (s *Whatsmiau) SendButtons(ctx context.Context, data *SendButtonsRequest) (*SendButtonsResponse, error) {
-	client, ok := s.clients.Load(data.InstanceID)
-	if !ok {
-		return nil, whatsmeow.ErrClientIsNil
-	}
-
-	if len(data.Buttons) == 0 {
-		return nil, fmt.Errorf("at least one button is required")
-	}
-
-	// Montar botões do proto
-	protoButtons := make([]*waE2E.ButtonsMessage_Button, 0, len(data.Buttons))
-	for i, b := range data.Buttons {
-		btn := &waE2E.ButtonsMessage_Button{
-			ButtonID: proto.String(fmt.Sprintf("btn_%d", i)),
-			ButtonText: &waE2E.ButtonsMessage_Button_ButtonText{
-				DisplayText: proto.String(b.DisplayText),
-			},
-		}
-
-		switch b.Type {
-		case "url":
-			btn.Type = waE2E.ButtonsMessage_Button_NATIVE_FLOW.Enum()
-			btn.NativeFlowInfo = &waE2E.ButtonsMessage_Button_NativeFlowInfo{
-				Name:       proto.String("cta_url"),
-				ParamsJSON: proto.String(fmt.Sprintf(`{"display_text":%q,"url":%q,"merchant_url":%q}`, b.DisplayText, b.URL, b.URL)),
-			}
-		case "copy":
-			btn.Type = waE2E.ButtonsMessage_Button_NATIVE_FLOW.Enum()
-			btn.NativeFlowInfo = &waE2E.ButtonsMessage_Button_NativeFlowInfo{
-				Name:       proto.String("cta_copy"),
-				ParamsJSON: proto.String(fmt.Sprintf(`{"display_text":%q,"copy_code":%q}`, b.DisplayText, b.CopyCode)),
-			}
-		case "call":
-			btn.Type = waE2E.ButtonsMessage_Button_NATIVE_FLOW.Enum()
-			btn.NativeFlowInfo = &waE2E.ButtonsMessage_Button_NativeFlowInfo{
-				Name:       proto.String("cta_call"),
-				ParamsJSON: proto.String(fmt.Sprintf(`{"display_text":%q,"phone_number":%q}`, b.DisplayText, b.PhoneNumber)),
-			}
-		case "pix":
-			btn.Type = waE2E.ButtonsMessage_Button_NATIVE_FLOW.Enum()
-			btn.NativeFlowInfo = &waE2E.ButtonsMessage_Button_NativeFlowInfo{
-				Name: proto.String("send_payment"),
-				ParamsJSON: proto.String(fmt.Sprintf(
-					`{"currency":%q,"name":%q,"key_type":%q,"key":%q}`,
-					b.Currency, b.Name, b.KeyType, b.Key,
-				)),
-			}
-		default: // "reply" ou qualquer outro
-			if b.ID != "" {
-				btn.ButtonID = proto.String(b.ID)
-			}
-			btn.Type = waE2E.ButtonsMessage_Button_RESPONSE.Enum()
-		}
-
-		protoButtons = append(protoButtons, btn)
-	}
-
-	// Montar a mensagem
-	btnsMsg := &waE2E.ButtonsMessage{
-		ContentText: proto.String(data.Description),
-		FooterText:  proto.String(data.Footer),
-		HeaderType:  waE2E.ButtonsMessage_TEXT.Enum(),
-		Buttons:     protoButtons,
-	}
-
-	// Cabeçalho de texto
-	if data.Title != "" {
-		btnsMsg.Header = &waE2E.ButtonsMessage_Text{
-			Text: data.Title,
-		}
-	}
-
-	// Suporte a quoted message
-	contextInfo := BuildContextInfoWithQuoted(QuotedMessageParams{
-		QuoteMessageID: data.QuoteMessageID,
-		QuoteMessage:   data.QuoteMessage,
-		RemoteJID:      data.RemoteJID,
-		QuotedMessage:  data.QuotedMessage,
-	})
-	if contextInfo != nil {
-		btnsMsg.ContextInfo = contextInfo
-	}
-
-	res, err := client.SendMessage(ctx, *data.RemoteJID, &waE2E.Message{
-		ButtonsMessage: btnsMsg,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &SendButtonsResponse{
-		ID:        res.ID,
-		CreatedAt: res.Timestamp,
-	}, nil
-}
-
-// =============================================================================
-// PAYMENT (cobrança com "Revisar e pagar")
-// Campos baseados no proto oficial: WAWebProtobufsE2E.proto → OrderMessage
-// =============================================================================
-
-// SendPaymentRequest envia uma cobrança no formato "Revisar e pagar".
 type SendPaymentRequest struct {
 	InstanceID     string         `json:"instance_id"`
 	RemoteJID      *types.JID     `json:"remote_jid"`
@@ -507,21 +366,19 @@ type SendPaymentRequest struct {
 	QuotedMessage  *waE2E.Message `json:"quoted_message,omitempty"`
 
 	OrderID     string `json:"order_id"`     // ex: "RAP1773090286620"
-	TotalAmount int64  `json:"total_amount"` // em centavos, ex: 100 = R$1,00
-	Currency    string `json:"currency"`     // ex: "BRL"
+	TotalAmount int64  `json:"total_amount"` // centavos, ex: 100 = R$1,00
+	Currency    string `json:"currency"`     // ex: "BRL" (padrão se vazio)
 	ItemCount   int32  `json:"item_count"`   // padrão: 1
-	OrderTitle  string `json:"order_title"`  // título do card
+	OrderTitle  string `json:"order_title"`  // título do card (opcional)
 	Message     string `json:"message"`      // subtítulo / nome do vendedor
 	SellerJID   string `json:"seller_jid"`   // ex: "5587811484538@s.whatsapp.net"
 }
 
-// SendPaymentResponse retorna o ID e timestamp da mensagem enviada.
 type SendPaymentResponse struct {
 	ID        string    `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// SendPayment envia uma cobrança que renderiza o card "Revisar e pagar" no WhatsApp.
 func (s *Whatsmiau) SendPayment(ctx context.Context, data *SendPaymentRequest) (*SendPaymentResponse, error) {
 	client, ok := s.clients.Load(data.InstanceID)
 	if !ok {
@@ -529,26 +386,22 @@ func (s *Whatsmiau) SendPayment(ctx context.Context, data *SendPaymentRequest) (
 	}
 
 	if data.OrderID == "" {
-		return nil, fmt.Errorf("order_id is required for payment messages")
+		return nil, fmt.Errorf("order_id is required")
 	}
-
 	if data.TotalAmount <= 0 {
 		return nil, fmt.Errorf("total_amount must be greater than zero")
 	}
-
 	if data.Currency == "" {
 		data.Currency = "BRL"
 	}
-
 	if data.ItemCount <= 0 {
 		data.ItemCount = 1
 	}
-
 	if data.OrderTitle == "" {
 		data.OrderTitle = fmt.Sprintf("Nº da cobrança: %s", data.OrderID)
 	}
 
-	// Proto armazena valor × 1000: R$1,00 = 100 centavos → 1000
+	// O proto armazena valor × 1000: R$1,00 (100 centavos) → 1000
 	totalAmount1000 := data.TotalAmount * 10
 
 	orderMsg := &waE2E.OrderMessage{
