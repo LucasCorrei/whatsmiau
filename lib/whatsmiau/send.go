@@ -355,18 +355,22 @@ func (s *Whatsmiau) SendReaction(ctx context.Context, data *SendReactionRequest)
 
 // =============================================================================
 // PAYMENT (cobrança com "Revisar e pagar")
+// Campos baseados no proto oficial: WAWebProtobufsE2E.proto → OrderMessage
 // =============================================================================
 
-// PaymentItem representa um item dentro de uma cobrança.
-type PaymentItem struct {
-	Name     string `json:"name"`     // ex: "Teste"
-	Quantity uint32 `json:"quantity"` // ex: 1
-	Amount   int64  `json:"amount"`   // preço unitário em centavos, ex: 100 = R$1,00
-}
-
-// SendPaymentRequest envia uma cobrança no formato "Revisar e pagar" (OrderMessage).
-// Use quando o JSON recebido tiver OrderID, TotalAmount e Items — caso contrário
-// use o fluxo Pix simples (chave + "Copiar chave Pix").
+// SendPaymentRequest envia uma cobrança no formato "Revisar e pagar".
+//
+// Mapeamento direto com o proto waE2E.OrderMessage:
+//   OrderID          → orderID (field 1)
+//   ItemCount        → itemCount (field 3)
+//   Status           → INQUIRY (field 4) — renderiza "Revisar e pagar"
+//   Surface          → CATALOG (field 5)
+//   Message          → message (field 6) — subtítulo do card
+//   OrderTitle       → orderTitle (field 7) — título do card
+//   SellerJID        → sellerJID (field 8)
+//   Token            → token (field 9)
+//   TotalAmount1000  → totalAmount1000 (field 10) — valor × 1000
+//   TotalCurrencyCode→ totalCurrencyCode (field 11)
 type SendPaymentRequest struct {
 	InstanceID     string         `json:"instance_id"`
 	RemoteJID      *types.JID     `json:"remote_jid"`
@@ -375,14 +379,15 @@ type SendPaymentRequest struct {
 	QuotedMessage  *waE2E.Message `json:"quoted_message,omitempty"`
 
 	// Dados da cobrança
-	OrderID     string         `json:"order_id"`     // ex: "RAP1773090286620"
-	Currency    string         `json:"currency"`     // ex: "BRL" (padrão se vazio)
-	TotalAmount int64          `json:"total_amount"` // em centavos, ex: 100 = R$1,00
-	Items       []*PaymentItem `json:"items"`
+	OrderID      string `json:"order_id"`       // ex: "RAP1773090286620"
+	TotalAmount  int64  `json:"total_amount"`   // em centavos, ex: 100 = R$1,00
+	Currency     string `json:"currency"`       // ex: "BRL" (padrão se vazio)
+	ItemCount    int32  `json:"item_count"`     // quantidade de itens (padrão: 1)
+	OrderTitle   string `json:"order_title"`    // título do card (opcional)
+	Message      string `json:"message"`        // subtítulo do card (opcional)
 
-	// Dados do vendedor (exibidos no cabeçalho do card)
-	SellerName  string `json:"seller_name"`  // ex: "Joseph Fernandes"
-	SellerPhone string `json:"seller_phone"` // ex: "+55 87 8114-8453"
+	// Dados do vendedor
+	SellerJID string `json:"seller_jid"` // ex: "5587811484538@s.whatsapp.net" ou telefone
 }
 
 // SendPaymentResponse retorna o ID e timestamp da mensagem enviada.
@@ -392,23 +397,25 @@ type SendPaymentResponse struct {
 }
 
 // SendPayment envia uma cobrança que renderiza o card "Revisar e pagar" no WhatsApp.
-// Internamente usa waE2E.OrderMessage — o mesmo tipo utilizado pelo WhatsApp Business.
+// Usa waE2E.OrderMessage com Status INQUIRY e Surface CATALOG.
 //
-// Auto-detecção sugerida no handler:
+// Exemplo de uso:
 //
-//	if IsPaymentRequest(req.OrderID, req.TotalAmount, req.Items) {
-//	    wm.SendPayment(ctx, req)
-//	} else {
-//	    wm.SendPix(ctx, pixReq)
-//	}
+//	res, err := wm.SendPayment(ctx, &SendPaymentRequest{
+//	    InstanceID:  "my-instance",
+//	    RemoteJID:   &remoteJID,
+//	    OrderID:     "RAP1773090286620",
+//	    TotalAmount: 100,   // R$1,00
+//	    Currency:    "BRL",
+//	    ItemCount:   1,
+//	    OrderTitle:  "Nº da cobrança: RAP1773090286620",
+//	    Message:     "Joseph Fernandes +55 87 8114-8453",
+//	    SellerJID:   "5587811484538@s.whatsapp.net",
+//	})
 func (s *Whatsmiau) SendPayment(ctx context.Context, data *SendPaymentRequest) (*SendPaymentResponse, error) {
 	client, ok := s.clients.Load(data.InstanceID)
 	if !ok {
 		return nil, whatsmeow.ErrClientIsNil
-	}
-
-	if data.Currency == "" {
-		data.Currency = "BRL"
 	}
 
 	if data.OrderID == "" {
@@ -419,34 +426,34 @@ func (s *Whatsmiau) SendPayment(ctx context.Context, data *SendPaymentRequest) (
 		return nil, fmt.Errorf("total_amount must be greater than zero")
 	}
 
-	// Montar itens do pedido
-	orderItems := make([]*waE2E.OrderMessage_Item, 0, len(data.Items))
-	for i, item := range data.Items {
-		orderItems = append(orderItems, &waE2E.OrderMessage_Item{
-			CustomItemID: proto.String(fmt.Sprintf("%s_item_%d", data.OrderID, i)),
-			Name:         proto.String(item.Name),
-			Amount: &waE2E.Money{
-				Value:        proto.Int64(item.Amount),
-				Offset:       proto.Uint32(100), // 2 casas decimais
-				CurrencyCode: proto.String(data.Currency),
-			},
-			Quantity: proto.Uint32(item.Quantity),
-		})
+	if data.Currency == "" {
+		data.Currency = "BRL"
 	}
 
+	if data.ItemCount <= 0 {
+		data.ItemCount = 1
+	}
+
+	if data.OrderTitle == "" {
+		data.OrderTitle = fmt.Sprintf("Nº da cobrança: %s", data.OrderID)
+	}
+
+	// O proto armazena o valor × 1000
+	// ex: R$1,00 = 100 centavos → 100 * 10 = 1000
+	totalAmount1000 := data.TotalAmount * 10
+
 	orderMsg := &waE2E.OrderMessage{
-		OrderID: proto.String(data.OrderID),
-		Total: &waE2E.Money{
-			Value:        proto.Int64(data.TotalAmount),
-			Offset:       proto.Uint32(100),
-			CurrencyCode: proto.String(data.Currency),
-		},
-		SellerJID:  proto.String(data.SellerPhone),
-		Items:      orderItems,
-		Message:    proto.String(fmt.Sprintf("%s %s", data.SellerName, data.SellerPhone)),
-		OrderTitle: proto.String(fmt.Sprintf("Nº da cobrança: %s", data.OrderID)),
-		// INQUIRY = pagamento pendente (renderiza "Revisar e pagar")
-		Status: waE2E.OrderMessage_INQUIRY.Enum(),
+		OrderID:           proto.String(data.OrderID),
+		Token:             proto.String(data.OrderID),
+		ItemCount:         proto.Int32(data.ItemCount),
+		TotalAmount1000:   proto.Int64(totalAmount1000),
+		TotalCurrencyCode: proto.String(data.Currency),
+		OrderTitle:        proto.String(data.OrderTitle),
+		Message:           proto.String(data.Message),
+		SellerJID:         proto.String(data.SellerJID),
+		Status:            waE2E.OrderMessage_INQUIRY.Enum(),
+		Surface:           waE2E.OrderMessage_CATALOG.Enum(),
+		MessageVersion:    proto.Int32(1),
 	}
 
 	// Suporte a quoted message
@@ -471,12 +478,4 @@ func (s *Whatsmiau) SendPayment(ctx context.Context, data *SendPaymentRequest) (
 		ID:        res.ID,
 		CreatedAt: res.Timestamp,
 	}, nil
-}
-
-// IsPaymentRequest retorna true quando os dados recebidos têm informação suficiente
-// para enviar uma cobrança (Payment) em vez de um Pix simples.
-//
-// Critérios: OrderID preenchido + TotalAmount > 0 + pelo menos 1 item.
-func IsPaymentRequest(orderID string, totalAmount int64, items []*PaymentItem) bool {
-	return orderID != "" && totalAmount > 0 && len(items) > 0
 }
