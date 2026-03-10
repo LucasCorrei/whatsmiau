@@ -441,7 +441,7 @@ func (s *Whatsmiau) SendButtons(ctx context.Context, data *SendButtonsRequest) (
       	      "native_flow_name": "order_details",
       	  },
    	 }}
-	}if len(data.Buttons) == 1 && data.Buttons[0].Type == "pix" {
+	}else if len(data.Buttons) == 1 && data.Buttons[0].Type == "pix" {
 		msg, err = buildPixButton(data, contextInfo)
 		if err != nil {
 			return nil, err
