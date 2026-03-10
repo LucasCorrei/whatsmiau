@@ -814,9 +814,48 @@ func buildPayButton(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*
     if strings.TrimSpace(b.Name) == "" {
         return nil, fmt.Errorf("pay: campo 'name' (nome do recebedor) obrigatório")
     }
-    if len(b.Items) == 0 {
-        return nil, fmt.Errorf("pay: campo 'items' obrigatório (ao menos 1 item)")
+// Montar itens e calcular subtotal
+// Se não vieram items, cria um item sintético com ItemName + Amount
+	items := b.Items
+	if len(items) == 0 {
+   		 itemName := strings.TrimSpace(b.ItemName)
+    if itemName == "" {
+        itemName = b.Name
     }
+    items = []PayOrderItem{
+        {
+            Name:     itemName,
+            Amount:   b.Amount,
+            Quantity: 1,
+        },
+    }
+}
+
+orderItems := make([]map[string]interface{}, 0, len(items))
+subtotal := 0
+for _, item := range items {
+    qty := item.Quantity
+    if qty <= 0 {
+        qty = 1
+    }
+    subtotal += item.Amount * qty
+
+    entry := map[string]interface{}{
+        "name": item.Name,
+        "amount": map[string]interface{}{
+            "value":  item.Amount,
+            "offset": 100,
+        },
+        "quantity": qty,
+    }
+    if item.ProductID != "" {
+        entry["product_id"] = item.ProductID
+    }
+    if item.RetailerID != "" {
+        entry["retailer_id"] = item.RetailerID
+    }
+    orderItems = append(orderItems, entry)
+}
 
     currency := strings.TrimSpace(b.Currency)
     if currency == "" {
