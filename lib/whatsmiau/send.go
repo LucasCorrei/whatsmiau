@@ -843,36 +843,29 @@ func buildPayButton(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*
 	}
 
 	// Montar itens e calcular subtotal
-	// retailer_id único por item é obrigatório para o WhatsApp exibir os nomes corretamente
 	orderItems := make([]map[string]interface{}, 0, len(items))
 	subtotal := 0
-	for i, item := range items {
+	for _, item := range items {
 		qty := item.Quantity
 		if qty <= 0 {
 			qty = 1
 		}
 		subtotal += item.Amount * qty
 
-		// retailer_id único por posição — evita conflito de renderização no WhatsApp
-		retailerID := item.RetailerID
-		if retailerID == "" {
-			retailerID = fmt.Sprintf("item_%d", i+1)
-		}
-		// product_id único por posição
-		productID := item.ProductID
-		if productID == "" {
-			productID = fmt.Sprintf("prod_%d", i+1)
-		}
-
 		entry := map[string]interface{}{
-			"retailer_id": retailerID,
-			"product_id":  productID,
-			"name":        item.Name,
+			"name": item.Name,
 			"amount": map[string]interface{}{
 				"value":  item.Amount,
 				"offset": 100,
 			},
 			"quantity": qty,
+		}
+		// só inclui se o caller forneceu — não gerar IDs artificiais
+		if item.ProductID != "" {
+			entry["product_id"] = item.ProductID
+		}
+		if item.RetailerID != "" {
+			entry["retailer_id"] = item.RetailerID
 		}
 		orderItems = append(orderItems, entry)
 	}
