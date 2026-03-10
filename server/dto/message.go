@@ -214,7 +214,7 @@ type SendButtonsButtonItem struct {
 }
 
 type SendButtonsRequest struct {
-	InstanceID  string                  `json:"instanceId"  validate:"required"`
+	InstanceID  string                  `param:"instance"   validate:"required"`
 	Number      string                  `json:"number"      validate:"required"`
 	Title       string                  `json:"title"`
 	Description string                  `json:"description"`
