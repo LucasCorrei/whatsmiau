@@ -2,6 +2,7 @@ package whatsmiau
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -404,51 +405,62 @@ func (s *Whatsmiau) SendButtons(ctx context.Context, data *SendButtonsRequest) (
 		return nil, fmt.Errorf("at least one button is required")
 	}
 
-	// Montar botões
+	// Verifica se há algum botão especial (não-reply)
+	// ButtonsMessage só suporta reply. URL/call/copy/pix precisam de InteractiveMessage.
+	hasSpecial := false
+	for _, b := range data.Buttons {
+		t := strings.TrimSpace(b.Type)
+		if t == "url" || t == "call" || t == "copy" || t == "pix" {
+			hasSpecial = true
+			break
+		}
+	}
+
+	if hasSpecial {
+		return s.sendButtonsInteractive(ctx, client, data)
+	}
+	return s.sendButtonsReply(ctx, client, data)
+}
+
+// sendButtonsReply — botões simples de resposta via ButtonsMessage
+// Suporta: type="reply" (padrão)
+func (s *Whatsmiau) sendButtonsReply(ctx context.Context, client *whatsmeow.Client, data *SendButtonsRequest) (*SendButtonsResponse, error) {
 	protoButtons := make([]*waE2E.ButtonsMessage_Button, 0, len(data.Buttons))
 	for _, b := range data.Buttons {
 		displayText := strings.TrimSpace(b.DisplayText)
 		if displayText == "" {
 			continue
 		}
-
 		buttonID := strings.TrimSpace(b.ID)
 		if buttonID == "" {
 			buttonID = displayText
 		}
-
 		protoButtons = append(protoButtons, &waE2E.ButtonsMessage_Button{
 			ButtonID: proto.String(buttonID),
 			ButtonText: &waE2E.ButtonsMessage_Button_ButtonText{
 				DisplayText: proto.String(displayText),
 			},
-			// RESPONSE + NativeFlowInfo vazio são obrigatórios para renderizar
 			Type:           waE2E.ButtonsMessage_Button_RESPONSE.Enum(),
 			NativeFlowInfo: &waE2E.ButtonsMessage_Button_NativeFlowInfo{},
 		})
 	}
-
 	if len(protoButtons) == 0 {
 		return nil, fmt.Errorf("valid buttons are required")
 	}
 
-	// Montar ButtonsMessage
 	buttonsMsg := &waE2E.ButtonsMessage{
 		ContentText: proto.String(data.Description),
 		HeaderType:  waE2E.ButtonsMessage_EMPTY.Enum(),
 		Buttons:     protoButtons,
 	}
-
 	if data.Title != "" {
 		buttonsMsg.HeaderType = waE2E.ButtonsMessage_TEXT.Enum()
 		buttonsMsg.Header = &waE2E.ButtonsMessage_Text{Text: data.Title}
 	}
-
 	if data.Footer != "" {
 		buttonsMsg.FooterText = proto.String(data.Footer)
 	}
 
-	// Quoted message
 	contextInfo := BuildContextInfoWithQuoted(QuotedMessageParams{
 		QuoteMessageID: data.QuoteMessageID,
 		QuoteMessage:   data.QuoteMessage,
@@ -459,16 +471,13 @@ func (s *Whatsmiau) SendButtons(ctx context.Context, data *SendButtonsRequest) (
 		buttonsMsg.ContextInfo = contextInfo
 	}
 
-	// WRAPPER obrigatório: DocumentWithCaptionMessage > FutureProofMessage
+	// Wrapper obrigatório para ButtonsMessage renderizar
 	message := &waE2E.Message{
 		DocumentWithCaptionMessage: &waE2E.FutureProofMessage{
-			Message: &waE2E.Message{
-				ButtonsMessage: buttonsMsg,
-			},
+			Message: &waE2E.Message{ButtonsMessage: buttonsMsg},
 		},
 	}
 
-	// AdditionalNodes obrigatórios para o WhatsApp processar como interactive
 	extraNodes := []waBinary.Node{{
 		Tag: "biz",
 		Content: []waBinary.Node{{
@@ -493,12 +502,132 @@ func (s *Whatsmiau) SendButtons(ctx context.Context, data *SendButtonsRequest) (
 	if err != nil {
 		return nil, err
 	}
-
-	return &SendButtonsResponse{
-		ID:        res.ID,
-		CreatedAt: res.Timestamp,
-	}, nil
+	return &SendButtonsResponse{ID: res.ID, CreatedAt: res.Timestamp}, nil
 }
+
+// sendButtonsInteractive — botões especiais via InteractiveMessage (NativeFlowMessage)
+// Suporta: type="url", "call", "copy", "pix"
+// Ref: InteractiveMessage > NativeFlowMessage, sem FutureProofMessage wrapper
+func (s *Whatsmiau) sendButtonsInteractive(ctx context.Context, client *whatsmeow.Client, data *SendButtonsRequest) (*SendButtonsResponse, error) {
+	nativeButtons := make([]*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, 0, len(data.Buttons))
+
+	for _, b := range data.Buttons {
+		displayText := strings.TrimSpace(b.DisplayText)
+		if displayText == "" {
+			continue
+		}
+
+		var name string
+		var paramsJSON []byte
+
+		switch strings.TrimSpace(b.Type) {
+		case "url":
+			name = "cta_url"
+			paramsJSON, _ = json.Marshal(map[string]interface{}{
+				"display_text":  displayText,
+				"url":           b.URL,
+				"merchant_url":  b.URL,
+			})
+		case "call":
+			name = "cta_call"
+			paramsJSON, _ = json.Marshal(map[string]interface{}{
+				"display_text":  displayText,
+				"phone_number":  b.PhoneNumber,
+			})
+		case "copy":
+			name = "cta_copy"
+			paramsJSON, _ = json.Marshal(map[string]interface{}{
+				"display_text": displayText,
+				"copy_code":    b.CopyCode,
+			})
+		case "pix":
+			name = "payment_info"
+			currency := b.Currency
+			if currency == "" {
+				currency = "BRL"
+			}
+			paramsJSON, _ = json.Marshal(map[string]interface{}{
+				"display_text": displayText,
+				"currency":     currency,
+				"total_amount": map[string]interface{}{"value": 0, "offset": 100},
+				"reference_id": fmt.Sprintf("PIX%d", time.Now().UnixMilli()),
+				"type":         "physical-goods",
+				"order": map[string]interface{}{
+					"status":     "pending",
+					"subtotal":   map[string]interface{}{"value": 0, "offset": 100},
+					"order_type": "ORDER",
+					"items": []map[string]interface{}{{
+						"retailer_id": "0",
+						"product_id":  "0",
+						"name":        b.Name,
+						"amount":      map[string]interface{}{"value": 0, "offset": 100},
+						"quantity":    1,
+					}},
+				},
+				"payment_settings": []map[string]interface{}{{
+					"type": "pix_static_code",
+					"pix_static_code": map[string]interface{}{
+						"merchant_name": b.Name,
+						"key":           b.Key,
+						"key_type":      strings.ToUpper(b.KeyType),
+					},
+				}},
+			})
+		default:
+			// reply dentro de InteractiveMessage — usar cta_reply
+			name = "cta_reply"
+			bid := strings.TrimSpace(b.ID)
+			if bid == "" {
+				bid = displayText
+			}
+			paramsJSON, _ = json.Marshal(map[string]interface{}{
+				"display_text": displayText,
+				"id":           bid,
+			})
+		}
+
+		nativeButtons = append(nativeButtons, &waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
+			Name:             proto.String(name),
+			ButtonParamsJSON: proto.String(string(paramsJSON)),
+		})
+	}
+
+	if len(nativeButtons) == 0 {
+		return nil, fmt.Errorf("valid buttons are required")
+	}
+
+	interactiveMsg := &waE2E.InteractiveMessage{
+		InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
+			NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
+				MessageVersion: proto.Int32(1),
+				Buttons:        nativeButtons,
+			},
+		},
+	}
+
+	// InteractiveMessage vai diretamente na Message, SEM FutureProofMessage
+	message := &waE2E.Message{InteractiveMessage: interactiveMsg}
+
+	// Biz node: usa o nome do primeiro botão como native_flow_name (flat, sem nesting)
+	// cta_url / cta_call / cta_copy / payment_info são todos InteractiveMessage com biz flat
+	nativeFlowName := nativeButtons[0].GetName()
+
+	extraNodes := []waBinary.Node{{
+		Tag: "biz",
+		Attrs: waBinary.Attrs{
+			"native_flow_name": nativeFlowName,
+		},
+	}}
+
+	res, err := client.SendMessage(ctx, *data.RemoteJID, message, whatsmeow.SendRequestExtra{
+		AdditionalNodes: &extraNodes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &SendButtonsResponse{ID: res.ID, CreatedAt: res.Timestamp}, nil
+}
+
 
 // =============================================================================
 // PAYMENT — "Revisar e pagar"
