@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"time"
 
@@ -368,6 +369,8 @@ type ButtonItem struct {
 	AdditionalNote     string         `json:"additionalNote"`     // observação
 	PaymentInstruction string         `json:"paymentInstruction"` // instrução de pagamento
 	ReferenceID        string         `json:"referenceId"`        // ID do pedido (auto-gerado se vazio)
+	BoletoLine     string         `json:"boletoLine"`         // linha digitável do boleto (só dígitos)
+	PixStaticCode  string         `json:"pixStaticCode"`      // payload PIX completo (QR Code EMV/BRCode)
 }
 
 // PayOrderItem representa um item do pedido no Review and Pay
@@ -431,6 +434,11 @@ func (s *Whatsmiau) SendButtons(ctx context.Context, data *SendButtonsRequest) (
 
 	if len(data.Buttons) == 1 && data.Buttons[0].Type == "pay" {
 		// PAY: InteractiveMessage direto + biz(native_flow_name="order_details")
+		log.Printf("[SendButtons PAY] Buttons[0]: %+v", data.Buttons[0])
+		log.Printf("[SendButtons PAY] Items count: %d", len(data.Buttons[0].Items))
+		for i, it := range data.Buttons[0].Items {
+			log.Printf("[SendButtons PAY] Item[%d]: name=%q amount=%d qty=%d", i, it.Name, it.Amount, it.Quantity)
+		}
 		msg, err = buildPayButton(data, contextInfo)
 		if err != nil {
 			return nil, err
@@ -803,11 +811,13 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 func buildPayButton(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*waE2E.Message, error) {
 	b := data.Buttons[0]
 
-	if strings.TrimSpace(b.Key) == "" {
-		return nil, fmt.Errorf("pay: campo 'key' (chave PIX) obrigatório")
-	}
-	if strings.TrimSpace(b.KeyType) == "" {
-		return nil, fmt.Errorf("pay: campo 'keyType' obrigatório (phone, email, cpf, cnpj, random)")
+	// Validações: name sempre obrigatório; key+keyType só obrigatórios se não for boleto puro
+	hasPix := strings.TrimSpace(b.Key) != "" && strings.TrimSpace(b.KeyType) != ""
+	hasBoleto := strings.TrimSpace(b.BoletoLine) != ""
+	hasPixStatic := strings.TrimSpace(b.PixStaticCode) != ""
+
+	if !hasPix && !hasBoleto && !hasPixStatic {
+		return nil, fmt.Errorf("pay: informe ao menos um método de pagamento: (key+keyType), boletoLine ou pixStaticCode")
 	}
 	if strings.TrimSpace(b.Name) == "" {
 		return nil, fmt.Errorf("pay: campo 'name' (nome do recebedor) obrigatório")
@@ -842,6 +852,8 @@ func buildPayButton(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*
 		}
 	}
 
+	log.Printf("[PAY] items recebidos: %+v", items)
+
 	// Montar itens e calcular subtotal
 	orderItems := make([]map[string]interface{}, 0, len(items))
 	subtotal := 0
@@ -870,6 +882,8 @@ func buildPayButton(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*
 		orderItems = append(orderItems, entry)
 	}
 
+	log.Printf("[PAY] orderItems montados: %+v", orderItems)
+
 	// Auto-calcular total se não informado
 	totalValue := b.TotalValue
 	if totalValue == 0 {
@@ -879,15 +893,16 @@ func buildPayButton(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*
 		}
 	}
 
+	log.Printf("[PAY] subtotal=%d discount=%d totalValue=%d", subtotal, b.Discount, totalValue)
+
 	// Montar order
 	order := map[string]interface{}{
-		"status": "payment_requested",
+		"status": "pending",
 		"subtotal": map[string]interface{}{
 			"value":  subtotal,
 			"offset": 100,
 		},
-		"order_type": "ORDER",
-		"items":      orderItems,
+		"items": orderItems,
 	}
 	if b.Discount > 0 {
 		order["discount"] = map[string]interface{}{
@@ -896,26 +911,61 @@ func buildPayButton(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*
 		}
 	}
 
+	// Montar payment_settings conforme os métodos informados
+	paymentSettings := make([]map[string]interface{}, 0, 2)
+
+	// PIX por chave (key + keyType)
+	if hasPix {
+		paymentSettings = append(paymentSettings, map[string]interface{}{
+			"type": "pix_static_code",
+			"pix_static_code": map[string]interface{}{
+				"merchant_name": b.Name,
+				"key":           b.Key,
+				"key_type":      pixKeyTypeToUpper(b.KeyType),
+			},
+		})
+	}
+
+	// PIX estático completo (QR Code EMV/BRCode gerado pelo banco)
+	if hasPixStatic {
+		paymentSettings = append(paymentSettings, map[string]interface{}{
+			"type": "pix_static_code",
+			"pix_static_code": map[string]interface{}{
+				"merchant_name": b.Name,
+				"code":          b.PixStaticCode,
+			},
+		})
+	}
+
+	// Boleto (linha digitável — somente dígitos)
+	if hasBoleto {
+		// Remove qualquer caractere não-numérico da linha digitável
+		digitableLine := strings.Map(func(r rune) rune {
+			if r >= '0' && r <= '9' {
+				return r
+			}
+			return -1
+		}, b.BoletoLine)
+		paymentSettings = append(paymentSettings, map[string]interface{}{
+			"type": "boleto",
+			"boleto": map[string]interface{}{
+				"digitable_line": digitableLine,
+			},
+		})
+	}
+
 	// Montar payload completo
 	buttonParams := map[string]interface{}{
-		"currency": currency,
-		"payment_settings": []map[string]interface{}{
-			{
-				"type": "pix_static_code",
-				"pix_static_code": map[string]interface{}{
-					"merchant_name": b.Name,
-					"key":           b.Key,
-					"key_type":      pixKeyTypeToUpper(b.KeyType),
-				},
-			},
-		},
-		"order": order,
+		"reference_id":     referenceID,
+		"type":             "digital-goods",
+		"payment_type":     "br",
+		"currency":         currency,
+		"payment_settings": paymentSettings,
+		"order":            order,
 		"total_amount": map[string]interface{}{
 			"value":  totalValue,
 			"offset": 100,
 		},
-		"type":         "physical-goods",
-		"reference_id": referenceID,
 	}
 	if b.AdditionalNote != "" {
 		buttonParams["additional_note"] = b.AdditionalNote
@@ -933,6 +983,8 @@ func buildPayButton(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*
 	if err != nil {
 		return nil, fmt.Errorf("pay: erro ao serializar params: %w", err)
 	}
+
+	log.Printf("[PAY] buttonParamsJSON final: %s", string(buttonParamsJSON))
 
 	interactiveMsg := &waE2E.InteractiveMessage{
 		Header: &waE2E.InteractiveMessage_Header{
