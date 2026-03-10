@@ -346,36 +346,37 @@ func (s *Whatsmiau) SendReaction(ctx context.Context, data *SendReactionRequest)
 }
 
 // ── SendButtons ───────────────────────────────────────────────────────────────
+
 type ButtonItem struct {
-    Type        string `json:"type"`        // "reply" | "copy" | "url" | "call" | "pix" | "pay"
-    DisplayText string `json:"displayText"`
-    ID          string `json:"id"`          // reply
-    CopyCode    string `json:"copyCode"`    // copy
-    URL         string `json:"url"`         // url
-    PhoneNumber string `json:"phoneNumber"` // call
-    // pix
-    Currency string `json:"currency"` // default: "BRL"
-    Name     string `json:"name"`     // merchant name
-    KeyType  string `json:"keyType"`  // phone, email, cpf, cnpj, random
-    Key      string `json:"key"`      // pix key
-    Amount   int    `json:"amount"`   // valor em centavos (ex: 1000 = R$10,00)
-    ItemName string `json:"itemName"` // nome do item/produto
-    // pay (review_and_pay) — campos adicionais
-    Items              []PayOrderItem `json:"items"`              // itens do pedido
-    Discount           int            `json:"discount"`           // desconto em centavos
-    TotalValue         int            `json:"totalValue"`         // total em centavos (auto-calculado se 0)
-    AdditionalNote     string         `json:"additionalNote"`     // observação
-    PaymentInstruction string         `json:"paymentInstruction"` // instrução de pagamento
-    ReferenceID        string         `json:"referenceId"`        // ID do pedido (auto-gerado se vazio)
+	Type        string `json:"type"`        // "reply" | "copy" | "url" | "call" | "pix" | "pay"
+	DisplayText string `json:"displayText"`
+	ID          string `json:"id"`          // reply
+	CopyCode    string `json:"copyCode"`    // copy
+	URL         string `json:"url"`         // url
+	PhoneNumber string `json:"phoneNumber"` // call
+	// pix
+	Currency string `json:"currency"` // default: "BRL"
+	Name     string `json:"name"`     // merchant name
+	KeyType  string `json:"keyType"`  // phone, email, cpf, cnpj, random
+	Key      string `json:"key"`      // pix key
+	Amount   int    `json:"amount"`   // valor em centavos (ex: 1000 = R$10,00)
+	ItemName string `json:"itemName"` // nome do item/produto
+	// pay (review_and_pay) — campos adicionais
+	Items              []PayOrderItem `json:"items"`              // itens do pedido
+	Discount           int            `json:"discount"`           // desconto em centavos
+	TotalValue         int            `json:"totalValue"`         // total em centavos (auto-calculado se 0)
+	AdditionalNote     string         `json:"additionalNote"`     // observação
+	PaymentInstruction string         `json:"paymentInstruction"` // instrução de pagamento
+	ReferenceID        string         `json:"referenceId"`        // ID do pedido (auto-gerado se vazio)
 }
 
 // PayOrderItem representa um item do pedido no Review and Pay
 type PayOrderItem struct {
-    Name       string `json:"name"`
-    Amount     int    `json:"amount"`     // em centavos
-    Quantity   int    `json:"quantity"`   // default: 1
-    ProductID  string `json:"productId"`
-    RetailerID string `json:"retailerId"`
+	Name       string `json:"name"`
+	Amount     int    `json:"amount"`     // em centavos
+	Quantity   int    `json:"quantity"`   // default: 1
+	ProductID  string `json:"productId"`
+	RetailerID string `json:"retailerId"`
 }
 
 type SendButtonsRequest struct {
@@ -428,20 +429,20 @@ func (s *Whatsmiau) SendButtons(ctx context.Context, data *SendButtonsRequest) (
 		err        error
 	)
 
-	// PIX usa caminho completamente diferente: InteractiveMessage direto +
-	// extra node flat biz(native_flow_name="payment_info")
 	if len(data.Buttons) == 1 && data.Buttons[0].Type == "pay" {
-    	msg, err = buildPayButton(data, contextInfo)
-    	if err != nil {
-    	    return nil, err
-    	}
-    	extraNodes = []waBinary.Node{{
-    	    Tag: "biz",
-      	  Attrs: waBinary.Attrs{
-      	      "native_flow_name": "order_details",
-      	  },
-   	 }}
-	}else if len(data.Buttons) == 1 && data.Buttons[0].Type == "pix" {
+		// PAY: InteractiveMessage direto + biz(native_flow_name="order_details")
+		msg, err = buildPayButton(data, contextInfo)
+		if err != nil {
+			return nil, err
+		}
+		extraNodes = []waBinary.Node{{
+			Tag: "biz",
+			Attrs: waBinary.Attrs{
+				"native_flow_name": "order_details",
+			},
+		}}
+	} else if len(data.Buttons) == 1 && data.Buttons[0].Type == "pix" {
+		// PIX: InteractiveMessage direto + biz(native_flow_name="payment_info")
 		msg, err = buildPixButton(data, contextInfo)
 		if err != nil {
 			return nil, err
@@ -557,7 +558,6 @@ func buildReplyButtons(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo)
 		buttonsMsg.Header = &waE2E.ButtonsMessage_Text{Text: data.Title}
 	}
 
-	// FutureProofMessage wrapper — obrigatório para renderizar no celular
 	return &waE2E.Message{
 		DocumentWithCaptionMessage: &waE2E.FutureProofMessage{
 			Message: &waE2E.Message{
@@ -566,7 +566,6 @@ func buildReplyButtons(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo)
 		},
 	}, nil
 }
-
 
 // ── Structs NativeFlow copy/url/call ──────────────────────────────────────────
 
@@ -615,7 +614,6 @@ func buildPixButton(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*
 	}
 	referenceID := fmt.Sprintf("PIX%d", time.Now().UnixMilli())
 
-	// Payload conforme protocolo WhatsApp — campos obrigatórios
 	buttonParams := map[string]interface{}{
 		"display_text": displayText,
 		"currency":     currency,
@@ -677,7 +675,6 @@ func buildPixButton(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*
 		ContextInfo: contextInfo,
 	}
 
-	// PIX: InteractiveMessage DIRETO no Message — sem FutureProofMessage wrapper
 	return &waE2E.Message{
 		InteractiveMessage: interactiveMsg,
 	}, nil
@@ -771,23 +768,23 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 	}
 
 	interactiveMsg := &waE2E.InteractiveMessage{
-  	  Header: &waE2E.InteractiveMessage_Header{
- 	       Title: proto.String(data.Title),
-	        HasMediaAttachment: proto.Bool(false),
- 	   },
-  	  Body: &waE2E.InteractiveMessage_Body{
-  	      Text: proto.String(data.Description),
- 	   },
-   	 Footer: &waE2E.InteractiveMessage_Footer{
-   	     Text: proto.String(data.Footer),
-  	  },
- 	   InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
-   	     NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
-    	        Buttons:        nativeButtons,
-    	        MessageVersion: proto.Int32(1),
-     	   },
-  	  },
-  	  ContextInfo: contextInfo,
+		Header: &waE2E.InteractiveMessage_Header{
+			Title:              proto.String(data.Title),
+			HasMediaAttachment: proto.Bool(false),
+		},
+		Body: &waE2E.InteractiveMessage_Body{
+			Text: proto.String(data.Description),
+		},
+		Footer: &waE2E.InteractiveMessage_Footer{
+			Text: proto.String(data.Footer),
+		},
+		InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
+			NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
+				Buttons:        nativeButtons,
+				MessageVersion: proto.Int32(1),
+			},
+		},
+		ContextInfo: contextInfo,
 	}
 
 	if strings.TrimSpace(data.Title) != "" {
@@ -797,9 +794,10 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 	}
 
 	return &waE2E.Message{
-    	InteractiveMessage: interactiveMsg,
+		InteractiveMessage: interactiveMsg,
 	}, nil
 }
+
 // ── buildPayButton — Review and Pay, InteractiveMessage direto, sem wrapper ───
 
 func buildPayButton(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*waE2E.Message, error) {
@@ -845,28 +843,36 @@ func buildPayButton(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*
 	}
 
 	// Montar itens e calcular subtotal
+	// retailer_id único por item é obrigatório para o WhatsApp exibir os nomes corretamente
 	orderItems := make([]map[string]interface{}, 0, len(items))
 	subtotal := 0
-	for _, item := range items {
+	for i, item := range items {
 		qty := item.Quantity
 		if qty <= 0 {
 			qty = 1
 		}
 		subtotal += item.Amount * qty
 
+		// retailer_id único por posição — evita conflito de renderização no WhatsApp
+		retailerID := item.RetailerID
+		if retailerID == "" {
+			retailerID = fmt.Sprintf("item_%d", i+1)
+		}
+		// product_id único por posição
+		productID := item.ProductID
+		if productID == "" {
+			productID = fmt.Sprintf("prod_%d", i+1)
+		}
+
 		entry := map[string]interface{}{
-			"name": item.Name,
+			"retailer_id": retailerID,
+			"product_id":  productID,
+			"name":        item.Name,
 			"amount": map[string]interface{}{
 				"value":  item.Amount,
 				"offset": 100,
 			},
 			"quantity": qty,
-		}
-		if item.ProductID != "" {
-			entry["product_id"] = item.ProductID
-		}
-		if item.RetailerID != "" {
-			entry["retailer_id"] = item.RetailerID
 		}
 		orderItems = append(orderItems, entry)
 	}
