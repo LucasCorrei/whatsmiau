@@ -745,19 +745,23 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 	}
 
 	interactiveMsg := &waE2E.InteractiveMessage{
-		Body: &waE2E.InteractiveMessage_Body{
-			Text: proto.String(data.Description),
-		},
-		Footer: &waE2E.InteractiveMessage_Footer{
-			Text: proto.String(data.Footer),
-		},
-		InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
-			NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
-				Buttons:        nativeButtons,
-				MessageVersion: proto.Int32(1),
-			},
-		},
-		ContextInfo: contextInfo,
+  	  Header: &waE2E.InteractiveMessage_Header{
+ 	       Title: proto.String(data.Title),
+	        HasMediaAttachment: proto.Bool(false),
+ 	   },
+  	  Body: &waE2E.InteractiveMessage_Body{
+  	      Text: proto.String(data.Description),
+ 	   },
+   	 Footer: &waE2E.InteractiveMessage_Footer{
+   	     Text: proto.String(data.Footer),
+  	  },
+ 	   InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
+   	     NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
+    	        Buttons:        nativeButtons,
+    	        MessageVersion: proto.Int32(1),
+     	   },
+  	  },
+  	  ContextInfo: contextInfo,
 	}
 
 	if strings.TrimSpace(data.Title) != "" {
@@ -767,10 +771,6 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 	}
 
 	return &waE2E.Message{
-		DocumentWithCaptionMessage: &waE2E.FutureProofMessage{
-			Message: &waE2E.Message{
-				InteractiveMessage: interactiveMsg,
-			},
-		},
+    	InteractiveMessage: interactiveMsg,
 	}, nil
 }
