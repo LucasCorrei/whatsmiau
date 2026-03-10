@@ -346,21 +346,36 @@ func (s *Whatsmiau) SendReaction(ctx context.Context, data *SendReactionRequest)
 }
 
 // ── SendButtons ───────────────────────────────────────────────────────────────
-
 type ButtonItem struct {
-	Type        string `json:"type"`        // "reply" | "copy" | "url" | "call" | "pix"
-	DisplayText string `json:"displayText"`
-	ID          string `json:"id"`          // reply
-	CopyCode    string `json:"copyCode"`    // copy
-	URL         string `json:"url"`         // url
-	PhoneNumber string `json:"phoneNumber"` // call
-	// pix
-	Currency string `json:"currency"` // default: "BRL"
-	Name     string `json:"name"`     // merchant name
-	KeyType  string `json:"keyType"`  // phone, email, cpf, cnpj, random
-	Key      string `json:"key"`      // pix key
-	Amount   int    `json:"amount"`   // valor em centavos (ex: 1000 = R$10,00)
-	ItemName string `json:"itemName"` // nome do item/produto
+    Type        string `json:"type"`        // "reply" | "copy" | "url" | "call" | "pix" | "pay"
+    DisplayText string `json:"displayText"`
+    ID          string `json:"id"`          // reply
+    CopyCode    string `json:"copyCode"`    // copy
+    URL         string `json:"url"`         // url
+    PhoneNumber string `json:"phoneNumber"` // call
+    // pix
+    Currency string `json:"currency"` // default: "BRL"
+    Name     string `json:"name"`     // merchant name
+    KeyType  string `json:"keyType"`  // phone, email, cpf, cnpj, random
+    Key      string `json:"key"`      // pix key
+    Amount   int    `json:"amount"`   // valor em centavos (ex: 1000 = R$10,00)
+    ItemName string `json:"itemName"` // nome do item/produto
+    // pay (review_and_pay) — campos adicionais
+    Items              []PayOrderItem `json:"items"`              // itens do pedido
+    Discount           int            `json:"discount"`           // desconto em centavos
+    TotalValue         int            `json:"totalValue"`         // total em centavos (auto-calculado se 0)
+    AdditionalNote     string         `json:"additionalNote"`     // observação
+    PaymentInstruction string         `json:"paymentInstruction"` // instrução de pagamento
+    ReferenceID        string         `json:"referenceId"`        // ID do pedido (auto-gerado se vazio)
+}
+
+// PayOrderItem representa um item do pedido no Review and Pay
+type PayOrderItem struct {
+    Name       string `json:"name"`
+    Amount     int    `json:"amount"`     // em centavos
+    Quantity   int    `json:"quantity"`   // default: 1
+    ProductID  string `json:"productId"`
+    RetailerID string `json:"retailerId"`
 }
 
 type SendButtonsRequest struct {
@@ -415,7 +430,18 @@ func (s *Whatsmiau) SendButtons(ctx context.Context, data *SendButtonsRequest) (
 
 	// PIX usa caminho completamente diferente: InteractiveMessage direto +
 	// extra node flat biz(native_flow_name="payment_info")
-	if len(data.Buttons) == 1 && data.Buttons[0].Type == "pix" {
+	if len(data.Buttons) == 1 && data.Buttons[0].Type == "pay" {
+    	msg, err = buildPayButton(data, contextInfo)
+    	if err != nil {
+    	    return nil, err
+    	}
+    	extraNodes = []waBinary.Node{{
+    	    Tag: "biz",
+      	  Attrs: waBinary.Attrs{
+      	      "native_flow_name": "order_details",
+      	  },
+   	 }}
+	}if len(data.Buttons) == 1 && data.Buttons[0].Type == "pix" {
 		msg, err = buildPixButton(data, contextInfo)
 		if err != nil {
 			return nil, err
@@ -773,4 +799,146 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 	return &waE2E.Message{
     	InteractiveMessage: interactiveMsg,
 	}, nil
+}
+// ── buildPayButton — Review and Pay, InteractiveMessage direto, sem wrapper ───
+
+func buildPayButton(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*waE2E.Message, error) {
+    b := data.Buttons[0]
+
+    if strings.TrimSpace(b.Key) == "" {
+        return nil, fmt.Errorf("pay: campo 'key' (chave PIX) obrigatório")
+    }
+    if strings.TrimSpace(b.KeyType) == "" {
+        return nil, fmt.Errorf("pay: campo 'keyType' obrigatório (phone, email, cpf, cnpj, random)")
+    }
+    if strings.TrimSpace(b.Name) == "" {
+        return nil, fmt.Errorf("pay: campo 'name' (nome do recebedor) obrigatório")
+    }
+    if len(b.Items) == 0 {
+        return nil, fmt.Errorf("pay: campo 'items' obrigatório (ao menos 1 item)")
+    }
+
+    currency := strings.TrimSpace(b.Currency)
+    if currency == "" {
+        currency = "BRL"
+    }
+    displayText := strings.TrimSpace(b.DisplayText)
+    if displayText == "" {
+        displayText = "Revisar e Pagar"
+    }
+    referenceID := strings.TrimSpace(b.ReferenceID)
+    if referenceID == "" {
+        referenceID = fmt.Sprintf("RAP%d", time.Now().UnixMilli())
+    }
+
+    // Montar itens e calcular subtotal
+    orderItems := make([]map[string]interface{}, 0, len(b.Items))
+    subtotal := 0
+    for _, item := range b.Items {
+        qty := item.Quantity
+        if qty <= 0 {
+            qty = 1
+        }
+        subtotal += item.Amount * qty
+
+        entry := map[string]interface{}{
+            "name": item.Name,
+            "amount": map[string]interface{}{
+                "value":  item.Amount,
+                "offset": 100,
+            },
+            "quantity": qty,
+        }
+        if item.ProductID != "" {
+            entry["product_id"] = item.ProductID
+        }
+        if item.RetailerID != "" {
+            entry["retailer_id"] = item.RetailerID
+        }
+        orderItems = append(orderItems, entry)
+    }
+
+    // Auto-calcular total se não informado
+    totalValue := b.TotalValue
+    if totalValue == 0 {
+        totalValue = subtotal - b.Discount
+        if totalValue < 0 {
+            totalValue = 0
+        }
+    }
+
+    // Montar order
+    order := map[string]interface{}{
+        "status": "payment_requested",
+        "subtotal": map[string]interface{}{
+            "value":  subtotal,
+            "offset": 100,
+        },
+        "order_type": "ORDER",
+        "items":      orderItems,
+    }
+    if b.Discount > 0 {
+        order["discount"] = map[string]interface{}{
+            "value":  b.Discount,
+            "offset": 100,
+        }
+    }
+
+    // Montar payload completo
+    buttonParams := map[string]interface{}{
+        "currency": currency,
+        "payment_settings": []map[string]interface{}{
+            {
+                "type": "pix_static_code",
+                "pix_static_code": map[string]interface{}{
+                    "merchant_name": b.Name,
+                    "key":           b.Key,
+                    "key_type":      pixKeyTypeToUpper(b.KeyType),
+                },
+            },
+        },
+        "order": order,
+        "total_amount": map[string]interface{}{
+            "value":  totalValue,
+            "offset": 100,
+        },
+        "type":         "physical-goods",
+        "reference_id": referenceID,
+    }
+    if b.AdditionalNote != "" {
+        buttonParams["additional_note"] = b.AdditionalNote
+    }
+    if b.PaymentInstruction != "" {
+        buttonParams["external_payment_configurations"] = []map[string]interface{}{
+            {
+                "payment_instruction": b.PaymentInstruction,
+                "type":                "payment_instruction",
+            },
+        }
+    }
+
+    buttonParamsJSON, err := json.Marshal(buttonParams)
+    if err != nil {
+        return nil, fmt.Errorf("pay: erro ao serializar params: %w", err)
+    }
+
+    interactiveMsg := &waE2E.InteractiveMessage{
+        InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
+            NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
+                MessageVersion: proto.Int32(1),
+                Buttons: []*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
+                    {
+                        Name:             proto.String("review_and_pay"),
+                        ButtonParamsJSON: proto.String(string(buttonParamsJSON)),
+                    },
+                },
+            },
+        },
+        ContextInfo: contextInfo,
+    }
+
+    // PAY: InteractiveMessage DIRETO no Message — sem FutureProofMessage wrapper
+    return &waE2E.Message{
+        InteractiveMessage: interactiveMsg,
+    }, nil
 }
