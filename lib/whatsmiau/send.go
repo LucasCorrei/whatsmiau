@@ -370,7 +370,7 @@ type ButtonItem struct {
 	PaymentInstruction string         `json:"paymentInstruction"` // instrução de pagamento
 	ReferenceID        string         `json:"referenceId"`        // ID do pedido (auto-gerado se vazio)
 	BoletoLine     string         `json:"boletoLine"`         // linha digitável do boleto (só dígitos)
-	PixStaticCode  string         `json:"pixStaticCode"`      // payload PIX completo (QR Code EMV/BRCode)
+	PixStaticCode  string         `json:"pixStaticCode"`      // QR Code PIX dinâmico gerado pelo banco — habilita "Copiar código PIX" no celular e no WhatsApp Web
 }
 
 // PayOrderItem representa um item do pedido no Review and Pay
@@ -914,25 +914,33 @@ func buildPayButton(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*
 	// Montar payment_settings conforme os métodos informados
 	paymentSettings := make([]map[string]interface{}, 0, 2)
 
-	// PIX por chave (key + keyType)
-	if hasPix {
+	// PIX dinâmico com código copiável (QR Code EMV/BRCode gerado pelo banco)
+	// Funciona tanto no celular quanto no WhatsApp Web (botão "Copiar código PIX")
+	// pixStaticCode tem prioridade sobre key+keyType quando ambos informados
+	if hasPixStatic {
+		pixEntry := map[string]interface{}{
+			"type": "pix_dynamic_code",
+			"pix_dynamic_code": map[string]interface{}{
+				"code":          b.PixStaticCode,
+				"merchant_name": b.Name,
+			},
+		}
+		// key e key_type são opcionais — apenas informativos na tela do pagador
+		if hasPix {
+			pixEntry["pix_dynamic_code"].(map[string]interface{})["key"] = b.Key
+			pixEntry["pix_dynamic_code"].(map[string]interface{})["key_type"] = pixKeyTypeToUpper(b.KeyType)
+		}
+		paymentSettings = append(paymentSettings, pixEntry)
+	} else if hasPix {
+		// PIX por chave simples — SEM código copiável, abre app do banco no celular
+		// No WhatsApp Web mostra "confirmar pedido" (limitação do protocolo)
 		paymentSettings = append(paymentSettings, map[string]interface{}{
-			"type": "pix_static_code",
-			"pix_static_code": map[string]interface{}{
+			"type": "pix_dynamic_code",
+			"pix_dynamic_code": map[string]interface{}{
 				"merchant_name": b.Name,
 				"key":           b.Key,
 				"key_type":      pixKeyTypeToUpper(b.KeyType),
-			},
-		})
-	}
-
-	// PIX estático completo (QR Code EMV/BRCode gerado pelo banco)
-	if hasPixStatic {
-		paymentSettings = append(paymentSettings, map[string]interface{}{
-			"type": "pix_static_code",
-			"pix_static_code": map[string]interface{}{
-				"merchant_name": b.Name,
-				"code":          b.PixStaticCode,
+				"code":          "", // sem código copiável
 			},
 		})
 	}
