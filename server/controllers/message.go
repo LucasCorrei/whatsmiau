@@ -365,6 +365,8 @@ func (s *Message) SendButtons(ctx echo.Context) error {
 			AdditionalNote:     b.AdditionalNote,
 			PaymentInstruction: b.PaymentInstruction,
 			ReferenceID:        b.ReferenceID,
+			BoletoLine:         b.BoletoLine,
+			PixStaticCode:      b.PixStaticCode,
 		})
 	}
 
