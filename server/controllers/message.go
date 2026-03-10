@@ -359,9 +359,7 @@ func (s *Message) SendButtons(ctx echo.Context) error {
 
 	if request.Quoted != nil && len(request.Quoted.Key.Id) > 0 {
 		sendData.QuoteMessageID = request.Quoted.Key.Id
-		if request.Quoted.Message != nil {
-			sendData.QuoteMessage = request.Quoted.Message.Conversation
-		}
+		sendData.QuoteMessage = request.Quoted.Message.Conversation
 	}
 
 	c := ctx.Request().Context()
