@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"math/rand"
 	"time"
 
 	"go.mau.fi/whatsmeow"
@@ -349,17 +348,19 @@ func (s *Whatsmiau) SendReaction(ctx context.Context, data *SendReactionRequest)
 // ── SendButtons ───────────────────────────────────────────────────────────────
 
 type ButtonItem struct {
-	Type        string `json:"type"`        // "reply" | "copy" | "url" | "call"
+	Type        string `json:"type"`        // "reply" | "copy" | "url" | "call" | "pix"
 	DisplayText string `json:"displayText"`
 	ID          string `json:"id"`          // reply
 	CopyCode    string `json:"copyCode"`    // copy
 	URL         string `json:"url"`         // url
 	PhoneNumber string `json:"phoneNumber"` // call
-	// campos legados — mantidos para compatibilidade com o controller
-	Currency string `json:"currency"`
-	Name     string `json:"name"`
-	KeyType  string `json:"keyType"`
-	Key      string `json:"key"`
+	// pix
+	Currency string `json:"currency"` // default: "BRL"
+	Name     string `json:"name"`     // merchant name
+	KeyType  string `json:"keyType"`  // phone, email, cpf, cnpj, random
+	Key      string `json:"key"`      // pix key
+	Amount   int    `json:"amount"`   // valor em centavos (ex: 1000 = R$10,00)
+	ItemName string `json:"itemName"` // nome do item/produto
 }
 
 type SendButtonsRequest struct {
@@ -412,8 +413,21 @@ func (s *Whatsmiau) SendButtons(ctx context.Context, data *SendButtonsRequest) (
 		err        error
 	)
 
-	if allReply(data.Buttons) {
-		// ── tipo "reply": ButtonsMessage + nodes native_flow ──────────────────
+	// PIX usa caminho completamente diferente: InteractiveMessage direto +
+	// extra node flat biz(native_flow_name="payment_info")
+	if len(data.Buttons) == 1 && data.Buttons[0].Type == "pix" {
+		msg, err = buildPixButton(data, contextInfo)
+		if err != nil {
+			return nil, err
+		}
+		extraNodes = []waBinary.Node{{
+			Tag: "biz",
+			Attrs: waBinary.Attrs{
+				"native_flow_name": "payment_info",
+			},
+		}}
+	} else if allReply(data.Buttons) {
+		// tipo "reply": ButtonsMessage + nodes nested native_flow
 		msg, err = buildReplyButtons(data, contextInfo)
 		if err != nil {
 			return nil, err
@@ -436,7 +450,7 @@ func (s *Whatsmiau) SendButtons(ctx context.Context, data *SendButtonsRequest) (
 			}},
 		}}
 	} else {
-		// ── tipos "copy", "url", "call": InteractiveMessage + nodes native_flow
+		// tipos "copy", "url", "call": InteractiveMessage + nodes nested native_flow
 		msg, err = buildInteractiveButtons(data, contextInfo)
 		if err != nil {
 			return nil, err
@@ -527,7 +541,8 @@ func buildReplyButtons(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo)
 	}, nil
 }
 
-// ── Structs para NativeFlow copy/url/call ─────────────────────────────────────
+
+// ── Structs NativeFlow copy/url/call ──────────────────────────────────────────
 
 type nativeFlowCopy struct {
 	DisplayText string `json:"display_text"`
@@ -545,45 +560,105 @@ type nativeFlowCall struct {
 	PhoneNumber string `json:"phone_number"`
 }
 
-// ── Structs para PIX ──────────────────────────────────────────────────────────
+// ── buildPixButton — InteractiveMessage direto, sem wrapper ───────────────────
 
-type pixStaticCode struct {
-	MerchantName string `json:"merchant_name"`
-	Key          string `json:"key"`
-	KeyType      string `json:"key_type"` // PHONE, EMAIL, CPF, CNPJ, EVP
+func buildPixButton(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*waE2E.Message, error) {
+	b := data.Buttons[0]
+
+	if strings.TrimSpace(b.Key) == "" {
+		return nil, fmt.Errorf("pix: campo 'key' obrigatório")
+	}
+	if strings.TrimSpace(b.KeyType) == "" {
+		return nil, fmt.Errorf("pix: campo 'keyType' obrigatório (phone, email, cpf, cnpj, random)")
+	}
+	if strings.TrimSpace(b.Name) == "" {
+		return nil, fmt.Errorf("pix: campo 'name' (nome do recebedor) obrigatório")
+	}
+
+	currency := strings.TrimSpace(b.Currency)
+	if currency == "" {
+		currency = "BRL"
+	}
+	displayText := strings.TrimSpace(b.DisplayText)
+	if displayText == "" {
+		displayText = "Pagar com PIX"
+	}
+	itemName := strings.TrimSpace(b.ItemName)
+	if itemName == "" {
+		itemName = b.Name
+	}
+	referenceID := fmt.Sprintf("PIX%d", time.Now().UnixMilli())
+
+	// Payload conforme protocolo WhatsApp — campos obrigatórios
+	buttonParams := map[string]interface{}{
+		"display_text": displayText,
+		"currency":     currency,
+		"total_amount": map[string]interface{}{
+			"value":  b.Amount,
+			"offset": 100,
+		},
+		"reference_id": referenceID,
+		"type":         "physical-goods",
+		"order": map[string]interface{}{
+			"status": "pending",
+			"subtotal": map[string]interface{}{
+				"value":  b.Amount,
+				"offset": 100,
+			},
+			"order_type": "ORDER",
+			"items": []map[string]interface{}{
+				{
+					"retailer_id": "0",
+					"product_id":  "0",
+					"name":        itemName,
+					"amount": map[string]interface{}{
+						"value":  b.Amount,
+						"offset": 100,
+					},
+					"quantity": 1,
+				},
+			},
+		},
+		"payment_settings": []map[string]interface{}{
+			{
+				"type": "pix_static_code",
+				"pix_static_code": map[string]interface{}{
+					"merchant_name": b.Name,
+					"key":           b.Key,
+					"key_type":      pixKeyTypeToUpper(b.KeyType),
+				},
+			},
+		},
+	}
+
+	buttonParamsJSON, err := json.Marshal(buttonParams)
+	if err != nil {
+		return nil, fmt.Errorf("pix: erro ao serializar params: %w", err)
+	}
+
+	interactiveMsg := &waE2E.InteractiveMessage{
+		InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
+			NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
+				MessageVersion: proto.Int32(1),
+				Buttons: []*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
+					{
+						Name:             proto.String("payment_info"),
+						ButtonParamsJSON: proto.String(string(buttonParamsJSON)),
+					},
+				},
+			},
+		},
+		ContextInfo: contextInfo,
+	}
+
+	// PIX: InteractiveMessage DIRETO no Message — sem FutureProofMessage wrapper
+	return &waE2E.Message{
+		InteractiveMessage: interactiveMsg,
+	}, nil
 }
 
-type pixPaymentSetting struct {
-	Type          string        `json:"type"` // "pix_static_code"
-	PixStaticCode pixStaticCode `json:"pix_static_code"`
-}
+// ── pixKeyTypeToUpper ─────────────────────────────────────────────────────────
 
-type pixOrderItem struct {
-	Name       string         `json:"name"`
-	Amount     map[string]any `json:"amount"`
-	Quantity   int            `json:"quantity"`
-	SaleAmount map[string]any `json:"sale_amount"`
-}
-
-type pixOrder struct {
-	Status    string         `json:"status"`    // "pending"
-	Subtotal  map[string]any `json:"subtotal"`
-	OrderType string         `json:"order_type"` // "ORDER"
-	Items     []pixOrderItem `json:"items"`
-}
-
-// nativeFlowPix — payload completo conforme protocolo WhatsApp
-type nativeFlowPix struct {
-	Currency        string              `json:"currency"`        // "BRL"
-	TotalAmount     map[string]any      `json:"total_amount"`
-	ReferenceID     string              `json:"reference_id"`
-	Type            string              `json:"type"`            // "physical-goods"
-	Order           pixOrder            `json:"order"`
-	PaymentSettings []pixPaymentSetting `json:"payment_settings"`
-}
-
-// pixKeyTypeToUpper converte keyType do usuário → formato uppercase WhatsApp
-// random → EVP, phone → PHONE, email → EMAIL, cpf → CPF, cnpj → CNPJ
 func pixKeyTypeToUpper(keyType string) string {
 	switch strings.ToLower(strings.TrimSpace(keyType)) {
 	case "random", "evp", "aleatorio", "aleatório":
@@ -601,21 +676,10 @@ func pixKeyTypeToUpper(keyType string) string {
 	}
 }
 
-// generateReferenceID gera um ID aleatório de 11 chars (A-Z0-9)
-func generateReferenceID() string {
-	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	b := make([]byte, 11)
-	for i := range b {
-		b[i] = chars[r.Intn(len(chars))]
-	}
-	return string(b)
-}
+// ── buildInteractiveButtons — copy, url, call ─────────────────────────────────
 
 func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*waE2E.Message, error) {
 	nativeButtons := make([]*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, 0, len(data.Buttons))
-
-	hasPix := false
 
 	for i, b := range data.Buttons {
 		displayText := strings.TrimSpace(b.DisplayText)
@@ -661,52 +725,6 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 				DisplayText: displayText,
 				PhoneNumber: b.PhoneNumber,
 			}
-		case "pix":
-			hasPix = true
-			if strings.TrimSpace(b.Key) == "" {
-				return nil, fmt.Errorf("botão pix[%d]: campo 'key' obrigatório", i)
-			}
-			if strings.TrimSpace(b.KeyType) == "" {
-				return nil, fmt.Errorf("botão pix[%d]: campo 'keyType' obrigatório (phone, email, cpf, cnpj, random)", i)
-			}
-			flowName = "payment_info"
-			paramsData = nativeFlowPix{
-				Currency: "BRL",
-				TotalAmount: map[string]any{
-					"value":  0,
-					"offset": 100,
-				},
-				ReferenceID: generateReferenceID(),
-				Type:        "physical-goods",
-				Order: pixOrder{
-					Status: "pending",
-					Subtotal: map[string]any{
-						"value":  0,
-						"offset": 100,
-					},
-					OrderType: "ORDER",
-					Items: []pixOrderItem{{
-						Name: b.Name,
-						Amount: map[string]any{
-							"value":  0,
-							"offset": 100,
-						},
-						Quantity: 0,
-						SaleAmount: map[string]any{
-							"value":  0,
-							"offset": 100,
-						},
-					}},
-				},
-				PaymentSettings: []pixPaymentSetting{{
-					Type: "pix_static_code",
-					PixStaticCode: pixStaticCode{
-						MerchantName: b.Name,
-						Key:          b.Key,
-						KeyType:      pixKeyTypeToUpper(b.KeyType),
-					},
-				}},
-			}
 		default:
 			return nil, fmt.Errorf("botão[%d]: tipo '%s' não suportado", i, b.Type)
 		}
@@ -726,9 +744,6 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 		return nil, fmt.Errorf("buttons: nenhum botão válido")
 	}
 
-	// messageParamsJSON obrigatório para PIX renderizar
-	messageParamsJSON := fmt.Sprintf(`{"from":"api","templateId":"%s"}`, generateReferenceID())
-
 	interactiveMsg := &waE2E.InteractiveMessage{
 		Body: &waE2E.InteractiveMessage_Body{
 			Text: proto.String(data.Description),
@@ -738,9 +753,8 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 		},
 		InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
 			NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
-				Buttons:           nativeButtons,
-				MessageVersion:    proto.Int32(1),
-				MessageParamsJSON: proto.String(messageParamsJSON),
+				Buttons:        nativeButtons,
+				MessageVersion: proto.Int32(1),
 			},
 		},
 		ContextInfo: contextInfo,
@@ -752,22 +766,11 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 		}
 	}
 
-	innerMsg := &waE2E.Message{
-		InteractiveMessage: interactiveMsg,
-	}
-
-	// PIX precisa de viewOnceMessage como wrapper — copy/url/call usam FutureProofMessage
-	if hasPix {
-		return &waE2E.Message{
-			ViewOnceMessage: &waE2E.FutureProofMessage{
-				Message: innerMsg,
-			},
-		}, nil
-	}
-
 	return &waE2E.Message{
 		DocumentWithCaptionMessage: &waE2E.FutureProofMessage{
-			Message: innerMsg,
+			Message: &waE2E.Message{
+				InteractiveMessage: interactiveMsg,
+			},
 		},
 	}, nil
 }
