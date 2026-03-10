@@ -334,17 +334,37 @@ func (s *Message) SendButtons(ctx echo.Context) error {
 
 	buttons := make([]whatsmiau.ButtonItem, 0, len(request.Buttons))
 	for _, b := range request.Buttons {
+		// Mapeia os items do DTO para a lib (necessário para o tipo "pay")
+		items := make([]whatsmiau.PayOrderItem, 0, len(b.Items))
+		for _, it := range b.Items {
+			items = append(items, whatsmiau.PayOrderItem{
+				Name:       it.Name,
+				Amount:     it.Amount,
+				Quantity:   it.Quantity,
+				ProductID:  it.ProductID,
+				RetailerID: it.RetailerID,
+			})
+		}
+
 		buttons = append(buttons, whatsmiau.ButtonItem{
-			Type:        b.Type,
-			DisplayText: b.DisplayText,
-			ID:          b.ID,
-			CopyCode:    b.CopyCode,
-			URL:         b.URL,
-			PhoneNumber: b.PhoneNumber,
-			Currency:    b.Currency,
-			Name:        b.Name,
-			KeyType:     b.KeyType,
-			Key:         b.Key,
+			Type:               b.Type,
+			DisplayText:        b.DisplayText,
+			ID:                 b.ID,
+			CopyCode:           b.CopyCode,
+			URL:                b.URL,
+			PhoneNumber:        b.PhoneNumber,
+			Currency:           b.Currency,
+			Name:               b.Name,
+			KeyType:            b.KeyType,
+			Key:                b.Key,
+			Amount:             b.Amount,
+			ItemName:           b.ItemName,
+			Items:              items,
+			Discount:           b.Discount,
+			TotalValue:         b.TotalValue,
+			AdditionalNote:     b.AdditionalNote,
+			PaymentInstruction: b.PaymentInstruction,
+			ReferenceID:        b.ReferenceID,
 		})
 	}
 
