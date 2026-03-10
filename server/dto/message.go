@@ -96,6 +96,7 @@ type SendAudioResponse struct {
 	Source           string                   `json:"source"`
 	Status           string                   `json:"status"`
 }
+
 type MessageContextInfo struct {
 	MessageSecret             string              `json:"messageSecret"`
 	DeviceListMetadata        *DeviceListMetadata `json:"deviceListMetadata,omitempty"`
@@ -195,30 +196,34 @@ type SendReactionResponse struct {
 // ── SendButtons ───────────────────────────────────────────────────────────────
 
 type SendButtonsButtonItem struct {
-	Type        string `json:"type"`        // "reply" | "url" | "copy" | "call" | "pix"
-	DisplayText string `json:"displayText"`
-	ID          string `json:"id"`
-	URL         string `json:"url"`
-	CopyCode    string `json:"copyCode"`
+	Type        string `json:"type"`        // "reply" | "copy" | "url" | "call" | "pix"
+	DisplayText string `json:"displayText"` // texto visível no botão
+	// reply
+	ID string `json:"id"`
+	// copy
+	CopyCode string `json:"copyCode"`
+	// url
+	URL string `json:"url"`
+	// call
 	PhoneNumber string `json:"phoneNumber"`
-	Currency    string `json:"currency"`
-	Name        string `json:"name"`
-	KeyType     string `json:"keyType"`
-	Key         string `json:"key"`
+	// pix
+	Currency string `json:"currency"`
+	Name     string `json:"name"`
+	KeyType  string `json:"keyType"`
+	Key      string `json:"key"`
 }
 
-// SendButtonsRequest é o body do endpoint POST /message/sendButtons.
 type SendButtonsRequest struct {
 	InstanceID  string                  `json:"instanceId"  validate:"required"`
 	Number      string                  `json:"number"      validate:"required"`
 	Title       string                  `json:"title"`
 	Description string                  `json:"description"`
 	Footer      string                  `json:"footer"`
-	Delay       int                     `json:"delay"`
 	Buttons     []SendButtonsButtonItem `json:"buttons"     validate:"required,min=1"`
+	Delay       int                     `json:"delay"`
+	Quoted      *MessageRequestQuoted   `json:"quoted,omitempty"`
 }
 
-// SendButtonsResponse é a resposta do endpoint.
 type SendButtonsResponse struct {
 	Key              MessageResponseKey `json:"key"`
 	Status           string             `json:"status"`
