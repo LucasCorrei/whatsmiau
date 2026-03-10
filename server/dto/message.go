@@ -216,7 +216,6 @@ type SendButtonsRequest struct {
 	Footer      string                  `json:"footer"`
 	Delay       int                     `json:"delay"`
 	Buttons     []SendButtonsButtonItem `json:"buttons"     validate:"required,min=1"`
-	Quoted      *QuotedMessage          `json:"quoted"`
 }
 
 // SendButtonsResponse é a resposta do endpoint.
