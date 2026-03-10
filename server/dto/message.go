@@ -195,30 +195,31 @@ type SendReactionResponse struct {
 // ── SendButtons ───────────────────────────────────────────────────────────────
 
 type SendButtonsButtonItem struct {
-	Type        string `json:"type"`        // "reply" | "copy" | "url" | "call" | "pix"
-	DisplayText string `json:"displayText"` // texto visível no botão
+	Type        string `json:"type"`        // "reply" | "url" | "copy" | "call" | "pix"
+	DisplayText string `json:"displayText"`
 	ID          string `json:"id"`
-	CopyCode    string `json:"copyCode"`
 	URL         string `json:"url"`
+	CopyCode    string `json:"copyCode"`
 	PhoneNumber string `json:"phoneNumber"`
 	Currency    string `json:"currency"`
 	Name        string `json:"name"`
 	KeyType     string `json:"keyType"`
 	Key         string `json:"key"`
-    Amount   	int    `json:"amount"` 
 }
 
+// SendButtonsRequest é o body do endpoint POST /message/sendButtons.
 type SendButtonsRequest struct {
-	InstanceID  string                  `param:"instance" validate:"required"`
-	Number      string                  `json:"number"    validate:"required"`
+	InstanceID  string                  `json:"instanceId"  validate:"required"`
+	Number      string                  `json:"number"      validate:"required"`
 	Title       string                  `json:"title"`
 	Description string                  `json:"description"`
 	Footer      string                  `json:"footer"`
-	Buttons     []SendButtonsButtonItem `json:"buttons"   validate:"required,min=1"`
-	Delay       int                     `json:"delay,omitempty" validate:"omitempty,min=0,max=300000"`
-	Quoted      *MessageRequestQuoted   `json:"quoted,omitempty"` // reutiliza o tipo existente
+	Delay       int                     `json:"delay"`
+	Buttons     []SendButtonsButtonItem `json:"buttons"     validate:"required,min=1"`
+	Quoted      *QuotedMessage          `json:"quoted"`
 }
 
+// SendButtonsResponse é a resposta do endpoint.
 type SendButtonsResponse struct {
 	Key              MessageResponseKey `json:"key"`
 	Status           string             `json:"status"`
