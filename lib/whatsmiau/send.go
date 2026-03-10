@@ -803,181 +803,155 @@ func buildInteractiveButtons(data *SendButtonsRequest, contextInfo *waE2E.Contex
 // ── buildPayButton — Review and Pay, InteractiveMessage direto, sem wrapper ───
 
 func buildPayButton(data *SendButtonsRequest, contextInfo *waE2E.ContextInfo) (*waE2E.Message, error) {
-    b := data.Buttons[0]
+	b := data.Buttons[0]
 
-    if strings.TrimSpace(b.Key) == "" {
-        return nil, fmt.Errorf("pay: campo 'key' (chave PIX) obrigatório")
-    }
-    if strings.TrimSpace(b.KeyType) == "" {
-        return nil, fmt.Errorf("pay: campo 'keyType' obrigatório (phone, email, cpf, cnpj, random)")
-    }
-    if strings.TrimSpace(b.Name) == "" {
-        return nil, fmt.Errorf("pay: campo 'name' (nome do recebedor) obrigatório")
-    }
-// Montar itens e calcular subtotal
-// Se não vieram items, cria um item sintético com ItemName + Amount
+	if strings.TrimSpace(b.Key) == "" {
+		return nil, fmt.Errorf("pay: campo 'key' (chave PIX) obrigatório")
+	}
+	if strings.TrimSpace(b.KeyType) == "" {
+		return nil, fmt.Errorf("pay: campo 'keyType' obrigatório (phone, email, cpf, cnpj, random)")
+	}
+	if strings.TrimSpace(b.Name) == "" {
+		return nil, fmt.Errorf("pay: campo 'name' (nome do recebedor) obrigatório")
+	}
+
+	currency := strings.TrimSpace(b.Currency)
+	if currency == "" {
+		currency = "BRL"
+	}
+	displayText := strings.TrimSpace(b.DisplayText)
+	if displayText == "" {
+		displayText = "Revisar e Pagar"
+	}
+	referenceID := strings.TrimSpace(b.ReferenceID)
+	if referenceID == "" {
+		referenceID = fmt.Sprintf("RAP%d", time.Now().UnixMilli())
+	}
+
+	// Se não vieram items, cria um item sintético com ItemName + Amount
 	items := b.Items
 	if len(items) == 0 {
-   		 itemName := strings.TrimSpace(b.ItemName)
-    if itemName == "" {
-        itemName = b.Name
-    }
-    items = []PayOrderItem{
-        {
-            Name:     itemName,
-            Amount:   b.Amount,
-            Quantity: 1,
-        },
-    }
-}
+		itemName := strings.TrimSpace(b.ItemName)
+		if itemName == "" {
+			itemName = b.Name
+		}
+		items = []PayOrderItem{
+			{
+				Name:     itemName,
+				Amount:   b.Amount,
+				Quantity: 1,
+			},
+		}
+	}
 
-orderItems := make([]map[string]interface{}, 0, len(items))
-subtotal := 0
-for _, item := range items {
-    qty := item.Quantity
-    if qty <= 0 {
-        qty = 1
-    }
-    subtotal += item.Amount * qty
+	// Montar itens e calcular subtotal
+	orderItems := make([]map[string]interface{}, 0, len(items))
+	subtotal := 0
+	for _, item := range items {
+		qty := item.Quantity
+		if qty <= 0 {
+			qty = 1
+		}
+		subtotal += item.Amount * qty
 
-    entry := map[string]interface{}{
-        "name": item.Name,
-        "amount": map[string]interface{}{
-            "value":  item.Amount,
-            "offset": 100,
-        },
-        "quantity": qty,
-    }
-    if item.ProductID != "" {
-        entry["product_id"] = item.ProductID
-    }
-    if item.RetailerID != "" {
-        entry["retailer_id"] = item.RetailerID
-    }
-    orderItems = append(orderItems, entry)
-}
+		entry := map[string]interface{}{
+			"name": item.Name,
+			"amount": map[string]interface{}{
+				"value":  item.Amount,
+				"offset": 100,
+			},
+			"quantity": qty,
+		}
+		if item.ProductID != "" {
+			entry["product_id"] = item.ProductID
+		}
+		if item.RetailerID != "" {
+			entry["retailer_id"] = item.RetailerID
+		}
+		orderItems = append(orderItems, entry)
+	}
 
-    currency := strings.TrimSpace(b.Currency)
-    if currency == "" {
-        currency = "BRL"
-    }
-    displayText := strings.TrimSpace(b.DisplayText)
-    if displayText == "" {
-        displayText = "Revisar e Pagar"
-    }
-    referenceID := strings.TrimSpace(b.ReferenceID)
-    if referenceID == "" {
-        referenceID = fmt.Sprintf("RAP%d", time.Now().UnixMilli())
-    }
+	// Auto-calcular total se não informado
+	totalValue := b.TotalValue
+	if totalValue == 0 {
+		totalValue = subtotal - b.Discount
+		if totalValue < 0 {
+			totalValue = 0
+		}
+	}
 
-    // Montar itens e calcular subtotal
-    orderItems := make([]map[string]interface{}, 0, len(b.Items))
-    subtotal := 0
-    for _, item := range b.Items {
-        qty := item.Quantity
-        if qty <= 0 {
-            qty = 1
-        }
-        subtotal += item.Amount * qty
+	// Montar order
+	order := map[string]interface{}{
+		"status": "payment_requested",
+		"subtotal": map[string]interface{}{
+			"value":  subtotal,
+			"offset": 100,
+		},
+		"order_type": "ORDER",
+		"items":      orderItems,
+	}
+	if b.Discount > 0 {
+		order["discount"] = map[string]interface{}{
+			"value":  b.Discount,
+			"offset": 100,
+		}
+	}
 
-        entry := map[string]interface{}{
-            "name": item.Name,
-            "amount": map[string]interface{}{
-                "value":  item.Amount,
-                "offset": 100,
-            },
-            "quantity": qty,
-        }
-        if item.ProductID != "" {
-            entry["product_id"] = item.ProductID
-        }
-        if item.RetailerID != "" {
-            entry["retailer_id"] = item.RetailerID
-        }
-        orderItems = append(orderItems, entry)
-    }
+	// Montar payload completo
+	buttonParams := map[string]interface{}{
+		"currency": currency,
+		"payment_settings": []map[string]interface{}{
+			{
+				"type": "pix_static_code",
+				"pix_static_code": map[string]interface{}{
+					"merchant_name": b.Name,
+					"key":           b.Key,
+					"key_type":      pixKeyTypeToUpper(b.KeyType),
+				},
+			},
+		},
+		"order": order,
+		"total_amount": map[string]interface{}{
+			"value":  totalValue,
+			"offset": 100,
+		},
+		"type":         "physical-goods",
+		"reference_id": referenceID,
+	}
+	if b.AdditionalNote != "" {
+		buttonParams["additional_note"] = b.AdditionalNote
+	}
+	if b.PaymentInstruction != "" {
+		buttonParams["external_payment_configurations"] = []map[string]interface{}{
+			{
+				"payment_instruction": b.PaymentInstruction,
+				"type":                "payment_instruction",
+			},
+		}
+	}
 
-    // Auto-calcular total se não informado
-    totalValue := b.TotalValue
-    if totalValue == 0 {
-        totalValue = subtotal - b.Discount
-        if totalValue < 0 {
-            totalValue = 0
-        }
-    }
+	buttonParamsJSON, err := json.Marshal(buttonParams)
+	if err != nil {
+		return nil, fmt.Errorf("pay: erro ao serializar params: %w", err)
+	}
 
-    // Montar order
-    order := map[string]interface{}{
-        "status": "payment_requested",
-        "subtotal": map[string]interface{}{
-            "value":  subtotal,
-            "offset": 100,
-        },
-        "order_type": "ORDER",
-        "items":      orderItems,
-    }
-    if b.Discount > 0 {
-        order["discount"] = map[string]interface{}{
-            "value":  b.Discount,
-            "offset": 100,
-        }
-    }
+	interactiveMsg := &waE2E.InteractiveMessage{
+		InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
+			NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
+				MessageVersion: proto.Int32(1),
+				Buttons: []*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
+					{
+						Name:             proto.String("review_and_pay"),
+						ButtonParamsJSON: proto.String(string(buttonParamsJSON)),
+					},
+				},
+			},
+		},
+		ContextInfo: contextInfo,
+	}
 
-    // Montar payload completo
-    buttonParams := map[string]interface{}{
-        "currency": currency,
-        "payment_settings": []map[string]interface{}{
-            {
-                "type": "pix_static_code",
-                "pix_static_code": map[string]interface{}{
-                    "merchant_name": b.Name,
-                    "key":           b.Key,
-                    "key_type":      pixKeyTypeToUpper(b.KeyType),
-                },
-            },
-        },
-        "order": order,
-        "total_amount": map[string]interface{}{
-            "value":  totalValue,
-            "offset": 100,
-        },
-        "type":         "physical-goods",
-        "reference_id": referenceID,
-    }
-    if b.AdditionalNote != "" {
-        buttonParams["additional_note"] = b.AdditionalNote
-    }
-    if b.PaymentInstruction != "" {
-        buttonParams["external_payment_configurations"] = []map[string]interface{}{
-            {
-                "payment_instruction": b.PaymentInstruction,
-                "type":                "payment_instruction",
-            },
-        }
-    }
-
-    buttonParamsJSON, err := json.Marshal(buttonParams)
-    if err != nil {
-        return nil, fmt.Errorf("pay: erro ao serializar params: %w", err)
-    }
-
-    interactiveMsg := &waE2E.InteractiveMessage{
-        InteractiveMessage: &waE2E.InteractiveMessage_NativeFlowMessage_{
-            NativeFlowMessage: &waE2E.InteractiveMessage_NativeFlowMessage{
-                MessageVersion: proto.Int32(1),
-                Buttons: []*waE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
-                    {
-                        Name:             proto.String("review_and_pay"),
-                        ButtonParamsJSON: proto.String(string(buttonParamsJSON)),
-                    },
-                },
-            },
-        },
-        ContextInfo: contextInfo,
-    }
-
-    // PAY: InteractiveMessage DIRETO no Message — sem FutureProofMessage wrapper
-    return &waE2E.Message{
-        InteractiveMessage: interactiveMsg,
-    }, nil
+	// PAY: InteractiveMessage DIRETO no Message — sem FutureProofMessage wrapper
+	return &waE2E.Message{
+		InteractiveMessage: interactiveMsg,
+	}, nil
 }
