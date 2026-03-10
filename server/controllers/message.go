@@ -138,7 +138,6 @@ func (s *Message) SendAudio(ctx echo.Context) error {
 			FromMe:    true,
 			Id:        res.ID,
 		},
-
 		Status:           "sent",
 		MessageType:      "audioMessage",
 		MessageTimestamp: int(res.CreatedAt.Unix() / 1000),
@@ -311,6 +310,86 @@ func (s *Message) SendReaction(ctx echo.Context) error {
 		Status:           "sent",
 		MessageType:      "reactionMessage",
 		MessageTimestamp: int(res.CreatedAt.UnixMicro() / 1000),
+		InstanceId:       request.InstanceID,
+	})
+}
+
+// ── SendButtons ───────────────────────────────────────────────────────────────
+
+func (s *Message) SendButtons(ctx echo.Context) error {
+	var request dto.SendButtonsRequest
+	if err := ctx.Bind(&request); err != nil {
+		return utils.HTTPFail(ctx, http.StatusUnprocessableEntity, err, "failed to bind request body")
+	}
+
+	if err := validator.New().Struct(&request); err != nil {
+		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
+	}
+
+	jid, err := numberToJid(request.Number)
+	if err != nil {
+		zap.L().Error("error converting number to jid", zap.Error(err))
+		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid number format")
+	}
+
+	buttons := make([]whatsmiau.ButtonItem, 0, len(request.Buttons))
+	for _, b := range request.Buttons {
+		buttons = append(buttons, whatsmiau.ButtonItem{
+			Type:        b.Type,
+			DisplayText: b.DisplayText,
+			ID:          b.ID,
+			CopyCode:    b.CopyCode,
+			URL:         b.URL,
+			PhoneNumber: b.PhoneNumber,
+			Currency:    b.Currency,
+			Name:        b.Name,
+			KeyType:     b.KeyType,
+			Key:         b.Key,
+		})
+	}
+
+	sendData := &whatsmiau.SendButtonsRequest{
+		InstanceID:  request.InstanceID,
+		RemoteJID:   jid,
+		Title:       request.Title,
+		Description: request.Description,
+		Footer:      request.Footer,
+		Buttons:     buttons,
+	}
+
+	if request.Quoted != nil && len(request.Quoted.Key.Id) > 0 {
+		sendData.QuoteMessageID = request.Quoted.Key.Id
+		if request.Quoted.Message != nil {
+			sendData.QuoteMessage = request.Quoted.Message.Conversation
+		}
+	}
+
+	c := ctx.Request().Context()
+	if err := s.whatsmiau.ChatPresence(&whatsmiau.ChatPresenceRequest{
+		InstanceID: request.InstanceID,
+		RemoteJID:  jid,
+		Presence:   types.ChatPresenceComposing,
+	}); err != nil {
+		zap.L().Error("Whatsmiau.ChatPresence", zap.Error(err))
+	} else {
+		time.Sleep(time.Millisecond * time.Duration(request.Delay))
+	}
+
+	res, err := s.whatsmiau.SendButtons(c, sendData)
+	if err != nil {
+		zap.L().Error("Whatsmiau.SendButtons failed", zap.Error(err))
+		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to send buttons")
+	}
+
+	return ctx.JSON(http.StatusOK, dto.SendButtonsResponse{
+		Key: dto.MessageResponseKey{
+			RemoteJid: request.Number,
+			FromMe:    true,
+			Id:        res.ID,
+		},
+		Status:           "sent",
+		MessageType:      "buttonsMessage",
+		MessageTimestamp: int(res.CreatedAt.Unix()),
 		InstanceId:       request.InstanceID,
 	})
 }
