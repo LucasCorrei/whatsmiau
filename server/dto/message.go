@@ -230,7 +230,7 @@ type SendButtonsButtonItem struct {
 	PaymentInstruction string                    `json:"paymentInstruction"`
 	ReferenceID        string                    `json:"referenceId"`
 	BoletoLine         string                    `json:"boletoLine"`         // linha digitável do boleto
-	PixStaticCode      string                    `json:"pixStaticCode"`      // QR Code EMV/BRCode completo
+	PixStaticCode      string                    `json:"pixStaticCode"`      // QR Code PIX dinâmico gerado pelo banco — habilita "Copiar código PIX" no WhatsApp Web
 }
 
 type SendButtonsRequest struct {
