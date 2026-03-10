@@ -229,6 +229,8 @@ type SendButtonsButtonItem struct {
 	AdditionalNote     string                    `json:"additionalNote"`
 	PaymentInstruction string                    `json:"paymentInstruction"`
 	ReferenceID        string                    `json:"referenceId"`
+	BoletoLine         string                    `json:"boletoLine"`         // linha digitável do boleto
+	PixStaticCode      string                    `json:"pixStaticCode"`      // QR Code EMV/BRCode completo
 }
 
 type SendButtonsRequest struct {
