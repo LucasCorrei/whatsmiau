@@ -214,6 +214,35 @@ func (s *Whatsmiau) handleMessageEvent(id string, instance *models.Instance, e *
 		return
 	}
 
+	// ✅ ADICIONA AQUI — log de delete/edit antes de processar normalmente
+	if proto := e.Message.GetProtocolMessage(); proto != nil {
+		switch proto.GetType() {
+		case waE2E.ProtocolMessage_REVOKE:
+			zap.L().Info("message deleted",
+				zap.String("instance", id),
+				zap.String("deleted_message_id", proto.GetKey().GetID()),
+				zap.String("chat", e.Info.Chat.String()),
+				zap.String("by", e.Info.Sender.String()),
+			)
+			return
+		case waE2E.ProtocolMessage_MESSAGE_EDIT:
+			newText := proto.GetEditedMessage().GetConversation()
+			if newText == "" {
+				if et := proto.GetEditedMessage().GetExtendedTextMessage(); et != nil {
+					newText = et.GetText()
+				}
+			}
+			zap.L().Info("message edited",
+				zap.String("instance", id),
+				zap.String("message_id", proto.GetKey().GetID()),
+				zap.String("chat", e.Info.Chat.String()),
+				zap.String("new_text", newText),
+			)
+			return
+		}
+	}
+
+	// resto do handler existente inalterado...
 	messageData := s.convertEventMessage(id, instance, e)
 	if messageData == nil {
 		zap.L().Error("failed to convert event", zap.String("id", id), zap.String("type", fmt.Sprintf("%T", e)), zap.Any("raw", e))
