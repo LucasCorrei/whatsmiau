@@ -25,9 +25,9 @@ import (
 
 // chatwootDefaultEvents são os eventos sempre escutados quando Chatwoot está configurado
 var chatwootDefaultEvents = map[string]bool{
-	"MESSAGES_UPSERT":  true,
-	"MESSAGES_UPDATE":  true,
-	"CONTACTS_UPSERT":  true,
+	"MESSAGES_UPSERT": true,
+	"MESSAGES_UPDATE": true,
+	"CONTACTS_UPSERT": true,
 }
 
 type emitter struct {
@@ -127,7 +127,7 @@ func hasChatwoot(instance *models.Instance) bool {
 		instance.ChatwootURL != ""
 }
 
-// buildEventMap constrói o mapa de eventos do webhook.
+// buildWebhookEventMap constrói o mapa de eventos do webhook.
 // Se o webhook for nil ou não tiver eventos, retorna mapa vazio.
 func buildWebhookEventMap(instance *models.Instance) map[string]bool {
 	eventMap := make(map[string]bool)
@@ -211,13 +211,18 @@ func (s *Whatsmiau) handleMessageEvent(id string, instance *models.Instance, e *
 		if proto := e.Message.GetProtocolMessage(); proto != nil {
 			switch proto.GetType() {
 			case waE2E.ProtocolMessage_REVOKE:
+				deletedID := proto.GetKey().GetID()
 				zap.L().Info("🗑️ message deleted",
 					zap.String("instance", id),
-					zap.String("deleted_message_id", proto.GetKey().GetID()),
+					zap.String("deleted_message_id", deletedID),
 					zap.String("chat", e.Info.Chat.String()),
 					zap.String("by", e.Info.Sender.String()),
 				)
+				if shouldEmitChatwoot && hasChatwoot(instance) {
+					go s.handleChatwootDelete(id, instance, deletedID)
+				}
 				return
+
 			case waE2E.ProtocolMessage_MESSAGE_EDIT:
 				newText := proto.GetEditedMessage().GetConversation()
 				if newText == "" {
@@ -225,13 +230,18 @@ func (s *Whatsmiau) handleMessageEvent(id string, instance *models.Instance, e *
 						newText = et.GetText()
 					}
 				}
+				editedID := proto.GetKey().GetID()
 				zap.L().Info("✏️ message edited",
 					zap.String("instance", id),
-					zap.String("message_id", proto.GetKey().GetID()),
+					zap.String("message_id", editedID),
 					zap.String("chat", e.Info.Chat.String()),
 					zap.String("new_text", newText),
 				)
+				if shouldEmitChatwoot && hasChatwoot(instance) && newText != "" {
+					go s.handleChatwootEdit(id, instance, editedID, newText)
+				}
 				return
+
 			default:
 				// outros ProtocolMessages (ephemeral, etc) — ignora silenciosamente
 				zap.L().Debug("protocol message ignored",
@@ -247,7 +257,6 @@ func (s *Whatsmiau) handleMessageEvent(id string, instance *models.Instance, e *
 		return
 	}
 
-	// resto do handler existente inalterado...
 	messageData := s.convertEventMessage(id, instance, e)
 	if messageData == nil {
 		zap.L().Error("failed to convert event", zap.String("id", id), zap.String("type", fmt.Sprintf("%T", e)), zap.Any("raw", e))
@@ -274,11 +283,11 @@ func (s *Whatsmiau) handleMessageEvent(id string, instance *models.Instance, e *
 	}
 
 	if shouldEmitWebhook && instance.Webhook != nil && instance.Webhook.Url != "" {
-    	s.emit(wookMessage, instance.Webhook.Url)
+		s.emit(wookMessage, instance.Webhook.Url)
 	}
 
 	if shouldEmitChatwoot && hasChatwoot(instance) {
-    	go s.handleChatwootMessage(id, instance, messageData)
+		go s.handleChatwootMessage(id, instance, messageData)
 	}
 }
 
@@ -1088,41 +1097,57 @@ func (s *Whatsmiau) getPic(id string, jid types.JID) (string, string, error) {
 	return pic.URL, base64.StdEncoding.EncodeToString(picRaw), nil
 }
 
+// ── Chatwoot helpers ──────────────────────────────────────────────────────────
+
 func (s *Whatsmiau) handleChatwootMessage(id string, instance *models.Instance, messageData *WookMessageData) {
 	if messageData == nil || messageData.Key == nil {
-        return
-    }
-    svc := NewChatwootService(ChatwootConfig{
-        URL:       instance.ChatwootURL,
-        AccountID: instance.ChatwootAccountID,
-        Token:     instance.ChatwootToken,
-    })
+		return
+	}
+	svc := NewChatwootService(ChatwootConfig{
+		URL:       instance.ChatwootURL,
+		AccountID: instance.ChatwootAccountID,
+		Token:     instance.ChatwootToken,
+	})
 
-    opts := HandleMessageOptions{}
+	opts := HandleMessageOptions{}
 
-    // Foto de perfil e JID da instância
-    if client, ok := s.clients.Load(id); ok && client != nil {
-        // JID da própria instância (para ignorar mensagens para si mesmo)
-        if client.Store.ID != nil {
-            opts.InstanceJID = client.Store.ID.String()
-        }
+	if client, ok := s.clients.Load(id); ok && client != nil {
+		if client.Store.ID != nil {
+			opts.InstanceJID = client.Store.ID.String()
+		}
 
-        // Foto de perfil do contato/grupo
-        if messageData != nil && messageData.Key != nil {
-            if jid, err := types.ParseJID(messageData.Key.RemoteJid); err == nil {
-                if url, _, err := s.getPic(id, jid); err == nil {
-                    opts.ProfilePicURL = url
-                }
+		if messageData.Key != nil {
+			if jid, err := types.ParseJID(messageData.Key.RemoteJid); err == nil {
+				if url, _, err := s.getPic(id, jid); err == nil {
+					opts.ProfilePicURL = url
+				}
 
-                // Nome real do grupo
-                if jid.Server == "g.us" {
-                    if groupInfo, err := client.GetGroupInfo(context.Background(), jid); err == nil && groupInfo != nil {
-                        opts.GroupName = groupInfo.Name
-                    }
-                }
-            }
-        }
-    }
+				if jid.Server == "g.us" {
+					if groupInfo, err := client.GetGroupInfo(context.Background(), jid); err == nil && groupInfo != nil {
+						opts.GroupName = groupInfo.Name
+					}
+				}
+			}
+		}
+	}
 
-    svc.HandleMessage(id, messageData, opts)
+	svc.HandleMessage(id, messageData, opts)
+}
+
+func (s *Whatsmiau) handleChatwootDelete(id string, instance *models.Instance, messageID string) {
+	svc := NewChatwootService(ChatwootConfig{
+		URL:       instance.ChatwootURL,
+		AccountID: instance.ChatwootAccountID,
+		Token:     instance.ChatwootToken,
+	})
+	svc.HandleMessageDelete(id, messageID)
+}
+
+func (s *Whatsmiau) handleChatwootEdit(id string, instance *models.Instance, messageID, newText string) {
+	svc := NewChatwootService(ChatwootConfig{
+		URL:       instance.ChatwootURL,
+		AccountID: instance.ChatwootAccountID,
+		Token:     instance.ChatwootToken,
+	})
+	svc.HandleMessageEdit(id, messageID, newText)
 }
