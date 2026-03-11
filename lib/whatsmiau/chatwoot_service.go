@@ -1541,3 +1541,117 @@ func extractMessageText(data *WookMessageData) string {
 
 	return ""
 }
+func (c *ChatwootService) HandleMessageDelete(instanceID, messageID string) {
+	if !c.IsEnabled() {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	inboxID, err := c.getInboxIDForInstance(ctx, instanceID)
+	if err != nil {
+		zap.L().Error("chatwoot: delete - inbox não encontrada", zap.Error(err))
+		return
+	}
+
+	sourceID := fmt.Sprintf("WAID:%s", messageID)
+	msgID, convID, err := c.findMessageBySourceID(ctx, sourceID, inboxID)
+	if err != nil || msgID <= 0 {
+		zap.L().Warn("chatwoot: delete - mensagem não encontrada no Chatwoot",
+			zap.String("sourceId", sourceID))
+		return
+	}
+
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages/%d",
+		c.config.URL, c.config.AccountID, convID, msgID)
+
+	resp, err := c.doRequest(ctx, "PATCH", url, map[string]interface{}{
+		"content": "🚫 _Esta mensagem foi apagada_",
+	})
+	if err != nil {
+		zap.L().Error("chatwoot: erro ao marcar mensagem como deletada", zap.Error(err))
+		return
+	}
+	defer resp.Body.Close()
+
+	zap.L().Info("chatwoot: 🗑️ mensagem marcada como deletada no Chatwoot",
+		zap.String("sourceId", sourceID),
+		zap.Int("messageId", msgID),
+		zap.Int("conversationId", convID))
+}
+func (c *ChatwootService) HandleMessageEdit(instanceID, messageID, newText string) {
+	if !c.IsEnabled() {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	inboxID, err := c.getInboxIDForInstance(ctx, instanceID)
+	if err != nil {
+		zap.L().Error("chatwoot: edit - inbox não encontrada", zap.Error(err))
+		return
+	}
+
+	sourceID := fmt.Sprintf("WAID:%s", messageID)
+	msgID, convID, err := c.findMessageBySourceID(ctx, sourceID, inboxID)
+	if err != nil || msgID <= 0 {
+		zap.L().Warn("chatwoot: edit - mensagem não encontrada no Chatwoot",
+			zap.String("sourceId", sourceID))
+		return
+	}
+
+	// Busca o conteúdo atual para preservar o texto original
+	originalContent := c.getMessageContent(ctx, convID, msgID)
+
+	var editedContent string
+	if originalContent != "" {
+		editedContent = fmt.Sprintf("%s\n\n✏️ _Editado: %s_", originalContent, newText)
+	} else {
+		editedContent = fmt.Sprintf("✏️ _Editado: %s_", newText)
+	}
+
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages/%d",
+		c.config.URL, c.config.AccountID, convID, msgID)
+
+	resp, err := c.doRequest(ctx, "PATCH", url, map[string]interface{}{
+		"content": editedContent,
+	})
+	if err != nil {
+		zap.L().Error("chatwoot: erro ao editar mensagem", zap.Error(err))
+		return
+	}
+	defer resp.Body.Close()
+
+	zap.L().Info("chatwoot: ✏️ mensagem editada no Chatwoot",
+		zap.String("sourceId", sourceID),
+		zap.Int("messageId", msgID),
+		zap.Int("conversationId", convID))
+}
+
+// getMessageContent busca o conteúdo atual de uma mensagem via SQL.
+func (c *ChatwootService) getMessageContent(ctx context.Context, convID, msgID int) string {
+	if c.db == nil {
+		return ""
+	}
+	var content string
+	_ = c.db.QueryRowContext(ctx,
+		`SELECT content FROM messages WHERE id = $1 AND conversation_id = $2 LIMIT 1`,
+		msgID, convID,
+	).Scan(&content)
+	return content
+}
+func (c *ChatwootService) findMessageBySourceID(ctx context.Context, sourceID string, _ int) (msgID, convID int, err error) {
+	if c.db == nil {
+		return 0, 0, fmt.Errorf("db não configurado")
+	}
+	row := c.db.QueryRowContext(ctx,
+		`SELECT id, conversation_id FROM messages WHERE source_id = $1 LIMIT 1`,
+		sourceID)
+	if err := row.Scan(&msgID, &convID); err != nil {
+		return 0, 0, fmt.Errorf("mensagem não encontrada: %s", sourceID)
+	}
+	return msgID, convID, nil
+}
+
