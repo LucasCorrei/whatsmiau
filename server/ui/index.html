@@ -1,0 +1,1299 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>WhatsMiau Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen font-sans">
+
+<!-- ─── SETUP MODAL ───────────────────────────────────────── -->
+<div id="setupModal" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 hidden">
+  <div class="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
+    <div class="flex items-center gap-3 mb-6">
+      <span class="text-4xl">🐱</span>
+      <div>
+        <h1 class="text-2xl font-bold text-gray-800">WhatsMiau</h1>
+        <p class="text-sm text-gray-500">Configure a conexão com o servidor</p>
+      </div>
+    </div>
+    <label class="block text-sm font-medium text-gray-700 mb-1">Base URL <span class="text-gray-400 font-normal">(incluindo /v1)</span></label>
+    <input id="setupBaseUrl" type="text" placeholder="http://localhost:8081/v1"
+      class="w-full border rounded-lg px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-green-500"/>
+    <p class="text-xs text-gray-400 mb-3">Compatível com WhatsMiau e Evolution API. Ex: <code class="bg-gray-100 px-1 rounded">http://meuservidor.com/v1</code></p>
+    <label class="block text-sm font-medium text-gray-700 mb-1">API Key <span class="text-gray-400 font-normal">(deixe vazio se não configurado)</span></label>
+    <input id="setupApiKey" type="password" placeholder="••••••••"
+      class="w-full border rounded-lg px-3 py-2 text-sm mb-5 focus:outline-none focus:ring-2 focus:ring-green-500"/>
+    <button onclick="saveSetup()"
+      class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-2.5 rounded-lg transition">
+      Entrar
+    </button>
+  </div>
+</div>
+
+<!-- ─── INSTANCE MODAL (criar / editar) ──────────────────── -->
+<div id="instanceModal" class="fixed inset-0 bg-black/60 flex items-start justify-center z-40 hidden overflow-y-auto py-8">
+  <div class="bg-white rounded-2xl shadow-xl w-full max-w-2xl mx-4">
+    <div class="flex items-center justify-between px-6 py-4 border-b">
+      <h2 id="modalTitle" class="text-lg font-bold text-gray-800">Nova Instância</h2>
+      <button onclick="closeInstanceModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+    </div>
+    <div class="p-6 space-y-4">
+      <!-- Tabs -->
+      <div class="flex border-b gap-1 mb-2">
+        <button class="modal-tab px-4 py-2 text-sm rounded-t-lg border-b-2 border-green-600 text-green-700 font-semibold" data-tab="basic" onclick="switchModalTab('basic',this)">Básico</button>
+        <button class="modal-tab px-4 py-2 text-sm rounded-t-lg border-b-2 border-transparent text-gray-500 hover:text-gray-700" data-tab="chatwoot" onclick="switchModalTab('chatwoot',this)">Chatwoot</button>
+        <button class="modal-tab px-4 py-2 text-sm rounded-t-lg border-b-2 border-transparent text-gray-500 hover:text-gray-700" data-tab="webhook" onclick="switchModalTab('webhook',this)">Webhook</button>
+        <button class="modal-tab px-4 py-2 text-sm rounded-t-lg border-b-2 border-transparent text-gray-500 hover:text-gray-700" data-tab="proxy" onclick="switchModalTab('proxy',this)">Proxy</button>
+        <button class="modal-tab px-4 py-2 text-sm rounded-t-lg border-b-2 border-transparent text-gray-500 hover:text-gray-700" data-tab="sgp" onclick="switchModalTab('sgp',this)">SGP</button>
+      </div>
+
+      <!-- Tab: Básico -->
+      <div id="tab-basic" class="space-y-3">
+        <div id="instanceNameRow">
+          <label class="text-sm font-medium text-gray-700">Nome da instância *</label>
+          <input id="f_instanceName" type="text" placeholder="minha-instancia"
+            class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+        </div>
+        <div>
+          <label class="text-sm font-medium text-gray-700">Nome de exibição</label>
+          <input id="f_name" type="text" placeholder="Ex: Suporte ao Cliente"
+            class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-sm font-medium text-gray-700">Token</label>
+            <input id="f_token" type="text" placeholder="(gerado automaticamente)"
+              class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">Número</label>
+            <input id="f_number" type="text" placeholder="5511999999999"
+              class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-x-6 gap-y-2 pt-1">
+          <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+            <input id="f_rejectCall" type="checkbox" class="rounded text-green-600"/> Rejeitar chamadas
+          </label>
+          <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+            <input id="f_groupsIgnore" type="checkbox" class="rounded text-green-600"/> Ignorar grupos
+          </label>
+          <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+            <input id="f_alwaysOnline" type="checkbox" class="rounded text-green-600"/> Sempre online
+          </label>
+          <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+            <input id="f_readMessages" type="checkbox" class="rounded text-green-600"/> Marcar como lido
+          </label>
+          <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+            <input id="f_syncFullHistory" type="checkbox" class="rounded text-green-600"/> Sincronizar histórico
+          </label>
+        </div>
+        <div>
+          <label class="text-sm font-medium text-gray-700">Mensagem ao rejeitar chamada</label>
+          <input id="f_msgCall" type="text" placeholder="No momento estou indisponível..."
+            class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+        </div>
+      </div>
+
+      <!-- Tab: Chatwoot -->
+      <div id="tab-chatwoot" class="space-y-3 hidden">
+        <div class="grid grid-cols-2 gap-3">
+          <div class="col-span-2">
+            <label class="text-sm font-medium text-gray-700">URL do Chatwoot</label>
+            <input id="f_chatwootUrl" type="text" placeholder="https://app.chatwoot.com"
+              class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">Account ID</label>
+            <input id="f_chatwootAccountId" type="text" placeholder="1"
+              class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">Token de acesso</label>
+            <input id="f_chatwootToken" type="text" placeholder="Token da conta Chatwoot"
+              class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">Nome da Inbox</label>
+            <input id="f_chatwootNameInbox" type="text" placeholder="WhatsApp Vendas"
+              class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">Dias importar mensagens</label>
+            <input id="f_chatwootDaysLimit" type="number" placeholder="30" min="0"
+              class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-x-6 gap-y-2 pt-1">
+          <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+            <input id="f_chatwootSignMsg" type="checkbox" class="rounded text-green-600"/> Assinar mensagens
+          </label>
+          <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+            <input id="f_chatwootReopenConversation" type="checkbox" class="rounded text-green-600"/> Reabrir conversa
+          </label>
+          <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+            <input id="f_chatwootConversationPending" type="checkbox" class="rounded text-green-600"/> Conversa pendente
+          </label>
+          <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+            <input id="f_chatwootImportContacts" type="checkbox" class="rounded text-green-600"/> Importar contatos
+          </label>
+          <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+            <input id="f_chatwootMergeBrazil" type="checkbox" class="rounded text-green-600"/> Mesclar contatos BR
+          </label>
+          <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+            <input id="f_chatwootImportMessages" type="checkbox" class="rounded text-green-600"/> Importar mensagens
+          </label>
+        </div>
+      </div>
+
+      <!-- Tab: Webhook -->
+      <div id="tab-webhook" class="space-y-3 hidden">
+        <div>
+          <label class="text-sm font-medium text-gray-700">URL do Webhook</label>
+          <input id="f_webhookUrl" type="text" placeholder="https://meu-servidor.com/webhook"
+            class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+        </div>
+        <div class="flex gap-6 pt-1">
+          <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+            <input id="f_webhookBase64" type="checkbox" class="rounded text-green-600"/> Mídia em Base64
+          </label>
+          <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+            <input id="f_webhookByEvents" type="checkbox" class="rounded text-green-600"/> Filtrar por eventos
+          </label>
+        </div>
+      </div>
+
+      <!-- Tab: Proxy -->
+      <div id="tab-proxy" class="space-y-3 hidden">
+        <div class="grid grid-cols-3 gap-3">
+          <div>
+            <label class="text-sm font-medium text-gray-700">Host</label>
+            <input id="f_proxyHost" type="text" placeholder="proxy.exemplo.com"
+              class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">Porta</label>
+            <input id="f_proxyPort" type="text" placeholder="8080"
+              class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">Protocolo</label>
+            <select id="f_proxyProtocol"
+              class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500">
+              <option value="">Nenhum</option>
+              <option value="http">HTTP</option>
+              <option value="https">HTTPS</option>
+              <option value="socks5">SOCKS5</option>
+            </select>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-sm font-medium text-gray-700">Usuário</label>
+            <input id="f_proxyUsername" type="text" placeholder="usuario"
+              class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">Senha</label>
+            <input id="f_proxyPassword" type="password" placeholder="••••••••"
+              class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab: SGP -->
+      <div id="tab-sgp" class="space-y-3 hidden">
+        <div class="flex items-center gap-3 p-3 bg-orange-50 rounded-lg border border-orange-100">
+          <input type="checkbox" id="f_sgpEnabled" class="w-4 h-4 accent-orange-500"/>
+          <div>
+            <label class="text-sm font-medium text-gray-700">Habilitar integração SGP</label>
+            <p class="text-xs text-gray-500 mt-0.5">Permite que o sistema SGP envie mensagens via esta instância</p>
+          </div>
+        </div>
+        <div>
+          <label class="text-sm font-medium text-gray-700">Token SGP</label>
+          <div class="flex gap-2 mt-1">
+            <input id="f_sgpToken" type="text" placeholder="Gerado automaticamente ao salvar"
+              oninput="updateSgpConfigPreview()"
+              class="flex-1 border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400 font-mono"/>
+            <button type="button" onclick="copySgpToken()"
+              class="px-3 py-2 bg-orange-100 hover:bg-orange-200 text-orange-700 text-sm rounded-lg transition" title="Copiar token">
+              📋
+            </button>
+            <button type="button" onclick="document.getElementById('f_sgpToken').value=''"
+              class="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-600 text-sm rounded-lg transition" title="Regenerar token ao salvar">
+              🔄
+            </button>
+          </div>
+          <p class="text-xs text-gray-400 mt-1">Deixe em branco para regenerar automaticamente</p>
+        </div>
+        <div>
+          <label class="text-sm font-medium text-gray-700">IPs permitidos <span class="text-gray-400 font-normal">(opcional)</span></label>
+          <input id="f_sgpAllowedIPs" type="text" placeholder="Ex: 192.168.1.10, 10.0.0.5"
+            class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"/>
+          <p class="text-xs text-gray-400 mt-1">Separe por vírgula. Vazio = aceita qualquer IP</p>
+        </div>
+        <div id="sgpSyncChatwootRow" class="flex items-center gap-3 p-3 bg-blue-50 rounded-lg border border-blue-100">
+          <input type="checkbox" id="f_sgpSyncChatwoot" class="w-4 h-4 accent-blue-500"/>
+          <div>
+            <label class="text-sm font-medium text-gray-700">Sincronizar com Chatwoot</label>
+            <p class="text-xs text-gray-500 mt-0.5">Mensagens enviadas pelo SGP aparecem no histórico do Chatwoot (sem alterar status da conversa). Requer Chatwoot configurado.</p>
+          </div>
+        </div>
+        <div class="text-xs text-gray-500 bg-gray-50 rounded-lg p-3 space-y-2">
+          <p class="font-medium text-gray-700">Configuração para o SGP:</p>
+          <div class="bg-white border rounded p-2 font-mono text-xs text-gray-700 whitespace-pre" id="sgpConfigPreview"></div>
+          <button type="button" onclick="copySgpConfig()"
+            class="w-full px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-xs font-semibold rounded-lg transition">
+            📋 Copiar configuração
+          </button>
+        </div>
+
+        <!-- WIKI de tags -->
+        <div class="border border-orange-200 rounded-lg overflow-hidden">
+          <button type="button" onclick="toggleSgpWiki(this)"
+            class="w-full flex items-center justify-between px-3 py-2 bg-orange-50 text-sm font-semibold text-orange-800 hover:bg-orange-100 transition">
+            <span>📖 Referência de tags SGP</span>
+            <span class="sgp-wiki-arrow text-orange-500 transition-transform">▼</span>
+          </button>
+          <div class="sgp-wiki-body hidden px-3 py-2 space-y-2 text-xs text-gray-700 bg-white">
+
+            <div class="rounded bg-gray-50 px-2 py-1.5">
+              <p class="font-semibold text-gray-800 mb-0.5">Texto simples</p>
+              <p class="text-gray-500">Qualquer texto sem tags é enviado como mensagem de texto.</p>
+            </div>
+
+            <div class="rounded bg-gray-50 px-2 py-1.5">
+              <code class="font-mono text-orange-700">[dividir_mensagem]</code>
+              <p class="text-gray-500 mt-0.5">Separa o conteúdo em mensagens distintas (pausa entre envios).</p>
+            </div>
+
+            <div class="rounded bg-gray-50 px-2 py-1.5">
+              <code class="font-mono text-orange-700">[sendimg=URL][legenda opcional]</code>
+              <p class="text-gray-500 mt-0.5">Envia uma imagem a partir da URL. Legenda é opcional.</p>
+              <p class="mt-1 text-gray-400 italic">Ex: <code>[sendimg=https://site.com/foto.jpg]Veja a foto</code></p>
+            </div>
+
+            <div class="rounded bg-gray-50 px-2 py-1.5">
+              <code class="font-mono text-orange-700">[boleto=código,valor]</code> ou
+              <code class="font-mono text-orange-700">[boleto=código,valor,tipo]</code>
+              <p class="text-gray-500 mt-0.5">Exibe a linha digitável do boleto formatada.</p>
+              <p class="mt-1 text-gray-400 italic">Ex: <code>[boleto=1234.5678 9012.3456,R$150,00,Boleto]</code></p>
+            </div>
+
+            <div class="rounded bg-gray-50 px-2 py-1.5">
+              <code class="font-mono text-orange-700">[link=URL]</code> ou
+              <code class="font-mono text-orange-700">[link=URL,nome]</code>
+              <p class="text-gray-500 mt-0.5">Se a URL servir um PDF, envia como documento. Caso contrário envia como texto (WhatsApp gera preview).</p>
+            </div>
+
+            <div class="rounded bg-gray-50 px-2 py-1.5">
+              <code class="font-mono text-orange-700">[linkcurto=URL]</code>
+              <p class="text-gray-500 mt-0.5">Encurta a URL via serviço externo e envia o link curto.</p>
+            </div>
+
+            <div class="rounded bg-gray-50 px-2 py-1.5">
+              <code class="font-mono text-orange-700">[qrcode=conteudo]</code>
+              <p class="text-gray-500 mt-0.5">Gera e envia um QR Code com o conteúdo informado.</p>
+              <p class="mt-1 text-gray-400 italic">Ex: <code>[qrcode=https://meusite.com/pagar]</code></p>
+            </div>
+
+            <div class="rounded bg-gray-50 px-2 py-1.5">
+              <code class="font-mono text-orange-700">[lista]</code>
+              <p class="text-gray-500 mt-0.5">Envia menu de preferência de recebimento de boleto (App / WhatsApp / Físico).</p>
+            </div>
+
+            <div class="rounded bg-gray-50 px-2 py-1.5">
+              <code class="font-mono text-orange-700">[template:nome;param1;param2]</code>
+              <p class="text-gray-500 mt-0.5">Envia um template com nome e parâmetros separados por ponto-e-vírgula.</p>
+            </div>
+
+            <div class="rounded bg-orange-50 border border-orange-200 px-2 py-1.5">
+              <p class="font-semibold text-orange-800 mb-0.5">🆕 Botões de resposta rápida</p>
+              <code class="font-mono text-orange-700">[botoes=corpo|Btn1;Btn2;Btn3]</code><br/>
+              <code class="font-mono text-orange-700">[botoes=título|corpo|Btn1;Btn2;Btn3]</code>
+              <p class="text-gray-500 mt-0.5">Envia mensagem com até 3 botões de resposta rápida. Separe os botões com <code>;</code>.</p>
+              <p class="mt-1 text-gray-400 italic">Ex: <code>[botoes=Escolha uma opção|Sim;Não;Talvez]</code></p>
+            </div>
+
+            <div class="rounded bg-blue-50 border border-blue-200 px-2 py-1.5">
+              <code class="font-mono text-blue-700">[fim]</code>
+              <p class="text-gray-500 mt-0.5">Agenda o envio para daqui a 5 segundos. Se for fim de semana ou feriado, agenda para o próximo dia útil.</p>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="flex justify-end gap-3 px-6 py-4 border-t bg-gray-50 rounded-b-2xl">
+      <button onclick="closeInstanceModal()" class="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 transition">Cancelar</button>
+      <button onclick="saveInstance()" class="px-5 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded-lg transition">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── QR CODE MODAL ─────────────────────────────────────── -->
+<div id="qrModal" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 hidden">
+  <div class="bg-white rounded-2xl shadow-xl p-8 w-full max-w-sm text-center">
+    <h2 class="text-lg font-bold text-gray-800 mb-0.5">Conectar WhatsApp</h2>
+    <p id="qrInstanceName" class="text-sm text-gray-500 mb-4"></p>
+
+    <!-- QR / spinner / connected -->
+    <div class="flex items-center justify-center min-h-[260px]">
+      <div id="qrSpinner" class="animate-spin rounded-full h-10 w-10 border-4 border-green-600 border-t-transparent"></div>
+      <img id="qrImage" src="" alt="QR Code" class="hidden rounded-xl shadow-md" style="width:260px;height:260px;object-fit:contain"/>
+      <div id="qrConnected" class="hidden flex-col items-center gap-3">
+        <div class="text-6xl">✅</div>
+        <p class="text-green-700 font-bold text-lg">Conectado!</p>
+      </div>
+      <div id="qrExpired" class="hidden flex-col items-center gap-3">
+        <div class="text-6xl">⏱️</div>
+        <p class="text-red-600 font-semibold">QR Code expirado</p>
+        <button onclick="retryQr()" class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded-lg transition">
+          Gerar novo QR
+        </button>
+      </div>
+    </div>
+
+    <!-- Status text -->
+    <p id="qrStatus" class="text-sm text-gray-500 mt-3 h-5">Aguardando QR Code...</p>
+
+    <!-- Countdown bar (40s) -->
+    <div id="qrCountdownWrap" class="mt-3 hidden">
+      <div class="flex justify-between text-xs text-gray-400 mb-1">
+        <span>Expira em</span>
+        <span id="qrCountdownSec">40s</span>
+      </div>
+      <div class="w-full bg-gray-200 rounded-full h-1.5">
+        <div id="qrCountdownBar" class="bg-green-500 h-1.5 rounded-full transition-all duration-1000" style="width:100%"></div>
+      </div>
+    </div>
+
+    <button onclick="closeQrModal()"
+      class="mt-5 px-5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-semibold rounded-lg transition">
+      Fechar
+    </button>
+  </div>
+</div>
+
+<!-- ─── SEND MESSAGE MODAL ────────────────────────────────── -->
+<div id="sendModal" class="fixed inset-0 bg-black/60 flex items-center justify-center z-40 hidden">
+  <div class="bg-white rounded-2xl shadow-xl w-full max-w-lg mx-4">
+    <div class="flex items-center justify-between px-6 py-4 border-b">
+      <div>
+        <h2 class="text-lg font-bold text-gray-800">Enviar Mensagem</h2>
+        <p id="sendModalInstance" class="text-sm text-gray-500"></p>
+      </div>
+      <button onclick="closeSendModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+    </div>
+    <div class="p-6 space-y-4">
+      <!-- Type tabs -->
+      <div class="flex border-b gap-1 mb-2">
+        <button class="send-tab px-4 py-2 text-sm rounded-t-lg border-b-2 border-green-600 text-green-700 font-semibold" data-type="text" onclick="switchSendTab('text',this)">Texto</button>
+        <button class="send-tab px-4 py-2 text-sm rounded-t-lg border-b-2 border-transparent text-gray-500 hover:text-gray-700" data-type="audio" onclick="switchSendTab('audio',this)">Áudio</button>
+        <button class="send-tab px-4 py-2 text-sm rounded-t-lg border-b-2 border-transparent text-gray-500 hover:text-gray-700" data-type="image" onclick="switchSendTab('image',this)">Imagem</button>
+        <button class="send-tab px-4 py-2 text-sm rounded-t-lg border-b-2 border-transparent text-gray-500 hover:text-gray-700" data-type="document" onclick="switchSendTab('document',this)">Documento</button>
+      </div>
+      <div>
+        <label class="text-sm font-medium text-gray-700">Número destinatário *</label>
+        <input id="s_number" type="text" placeholder="5511999999999"
+          class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+      </div>
+      <div id="send-text">
+        <label class="text-sm font-medium text-gray-700">Mensagem *</label>
+        <textarea id="s_text" rows="4" placeholder="Digite sua mensagem..."
+          class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"></textarea>
+      </div>
+      <div id="send-audio" class="hidden">
+        <label class="text-sm font-medium text-gray-700">URL do áudio *</label>
+        <input id="s_audio" type="text" placeholder="https://..."
+          class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+      </div>
+      <div id="send-image" class="hidden space-y-3">
+        <div>
+          <label class="text-sm font-medium text-gray-700">URL da imagem *</label>
+          <input id="s_imageUrl" type="text" placeholder="https://..."
+            class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+        </div>
+        <div>
+          <label class="text-sm font-medium text-gray-700">Legenda</label>
+          <input id="s_imageCaption" type="text" placeholder="(opcional)"
+            class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+        </div>
+      </div>
+      <div id="send-document" class="hidden space-y-3">
+        <div>
+          <label class="text-sm font-medium text-gray-700">URL do arquivo *</label>
+          <input id="s_docUrl" type="text" placeholder="https://..."
+            class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-sm font-medium text-gray-700">Nome do arquivo</label>
+            <input id="s_docName" type="text" placeholder="relatorio.pdf"
+              class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+          </div>
+          <div>
+            <label class="text-sm font-medium text-gray-700">Mimetype</label>
+            <input id="s_docMime" type="text" placeholder="application/pdf"
+              class="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"/>
+          </div>
+        </div>
+      </div>
+      <div id="sendResult" class="hidden rounded-lg p-3 text-xs font-mono break-all"></div>
+    </div>
+    <div class="flex justify-end gap-3 px-6 py-4 border-t bg-gray-50 rounded-b-2xl">
+      <button onclick="closeSendModal()" class="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 transition">Fechar</button>
+      <button onclick="sendMessage()" id="sendBtn"
+        class="px-5 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded-lg transition">
+        Enviar
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── MAIN ───────────────────────────────────────────────── -->
+<div class="max-w-7xl mx-auto px-4 py-6">
+  <!-- Header -->
+  <div class="flex items-center justify-between mb-6">
+    <div class="flex items-center gap-3">
+      <span class="text-3xl">🐱</span>
+      <div>
+        <h1 class="text-2xl font-bold text-gray-800">WhatsMiau</h1>
+        <p class="text-xs text-gray-500">Dashboard de instâncias</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <button onclick="loadInstances()" id="refreshBtn" title="Atualizar"
+        class="p-2 rounded-lg text-gray-500 hover:bg-gray-200 transition">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M4 4v5h5M20 20v-5h-5M4 9a8 8 0 0115 1M20 15a8 8 0 01-15-1"/>
+        </svg>
+      </button>
+      <button onclick="openSetup()"
+        class="px-3 py-2 text-sm text-gray-600 hover:bg-gray-200 rounded-lg transition flex items-center gap-1">
+        ⚙️ Config
+      </button>
+      <button onclick="openCreateModal()"
+        class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded-lg transition flex items-center gap-2">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+        </svg>
+        Nova Instância
+      </button>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="fixed top-4 right-4 z-50 hidden">
+    <div id="toastInner" class="px-4 py-3 rounded-lg shadow-lg text-sm font-medium text-white">
+      <span id="toastMsg"></span>
+    </div>
+  </div>
+
+  <!-- Loading -->
+  <div id="loadingState" class="flex items-center justify-center py-20 hidden">
+    <div class="animate-spin rounded-full h-10 w-10 border-4 border-green-600 border-t-transparent"></div>
+  </div>
+
+  <!-- Empty -->
+  <div id="emptyState" class="hidden text-center py-20">
+    <div class="text-6xl mb-4">📱</div>
+    <h3 class="text-xl font-semibold text-gray-700 mb-2">Nenhuma instância</h3>
+    <p class="text-gray-500 text-sm mb-6">Crie sua primeira instância WhatsApp para começar.</p>
+    <button onclick="openCreateModal()"
+      class="px-5 py-2.5 bg-green-600 hover:bg-green-700 text-white font-semibold rounded-lg transition">
+      Criar instância
+    </button>
+  </div>
+
+  <!-- Grid -->
+  <div id="instanceGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 hidden"></div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════
+// STATE
+// ══════════════════════════════════════════════════════
+let API_KEY  = '';
+let BASE_URL = '';
+let instances = [];      // lista com _state injetado
+let editingId  = null;
+let sendInst   = null;
+let sendType   = 'text';
+let qrPollTimer   = null;
+let autoPollTimer = null;
+// qrCurrentId, qrCountdown, qrTickTimer são declarados perto das funções QR
+
+// ══════════════════════════════════════════════════════
+// BOOT
+// ══════════════════════════════════════════════════════
+window.addEventListener('DOMContentLoaded', () => {
+  API_KEY  = localStorage.getItem('wm_apikey')  || '';
+  BASE_URL = (localStorage.getItem('wm_baseurl') || '').replace(/\/$/, '');
+  if (!BASE_URL) {
+    document.getElementById('setupBaseUrl').value = window.location.origin + '/v1';
+    openSetup();
+  } else {
+    loadInstances();
+  }
+  startAutoPoll();
+});
+
+// ══════════════════════════════════════════════════════
+// API
+// ══════════════════════════════════════════════════════
+function apiUrl(path) {
+  return BASE_URL.replace(/\/$/, '') + path;
+}
+
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (API_KEY) opts.headers['apikey'] = API_KEY;
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  const res  = await fetch(apiUrl(path), opts);
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = text; }
+  if (!res.ok) throw { status: res.status, data };
+  return data;
+}
+
+// ══════════════════════════════════════════════════════
+// SETUP
+// ══════════════════════════════════════════════════════
+function openSetup() {
+  document.getElementById('setupApiKey').value  = API_KEY;
+  document.getElementById('setupBaseUrl').value = BASE_URL || window.location.origin;
+  show('setupModal');
+}
+function saveSetup() {
+  const base = document.getElementById('setupBaseUrl').value.trim();
+  if (!base) { toast('Informe a URL do servidor', 'error'); return; }
+  API_KEY  = document.getElementById('setupApiKey').value.trim();
+  BASE_URL = base.replace(/\/$/, '');
+  localStorage.setItem('wm_apikey',  API_KEY);
+  localStorage.setItem('wm_baseurl', BASE_URL);
+  hide('setupModal');
+  loadInstances();
+}
+
+// ══════════════════════════════════════════════════════
+// LOAD + STATUS
+// ══════════════════════════════════════════════════════
+async function loadInstances() {
+  show('loadingState'); hide('instanceGrid'); hide('emptyState');
+  const btn = document.getElementById('refreshBtn');
+  btn.classList.add('animate-spin');
+  try {
+    const data = await api('GET', '/instance/fetchInstances');
+    const list = Array.isArray(data) ? data : [];
+
+    // connectionStatus já vem no list response (campo adicionado no servidor)
+    list.forEach(inst => {
+      // Suporta nosso formato (connectionStatus) e Evolution API (connectionStatus também)
+      inst._state = normalizeState(inst.connectionStatus || inst.state || inst.instance?.state || 'closed');
+    });
+
+    instances = list;
+    renderInstances();
+  } catch(e) {
+    console.error(e);
+    toast('Erro ao carregar: ' + (e.data?.error || e.status || e), 'error');
+    if (e.status === 401) openSetup();
+  } finally {
+    hide('loadingState');
+    btn.classList.remove('animate-spin');
+  }
+}
+
+function startAutoPoll() {
+  clearInterval(autoPollTimer);
+  autoPollTimer = setInterval(() => {
+    if (API_KEY !== undefined && BASE_URL) loadInstances();
+  }, 15000);
+}
+
+// ══════════════════════════════════════════════════════
+// RENDER
+// ══════════════════════════════════════════════════════
+// Valores reais retornados por /instance/connectionState/:id  →  constants.go
+// Connected="open" | QrCode="qr-code" | Connecting="connecting" | Closed="closed"
+const STATUS_MAP = {
+  'open':       { label: '<span class="inline-block w-2 h-2 rounded-full bg-green-500 mr-1.5"></span>Conectada',    cls: 'bg-green-50 text-green-800 border border-green-200' },
+  'closed':     { label: '<span class="inline-block w-2 h-2 rounded-full bg-red-500 mr-1.5"></span>Desconectada',  cls: 'bg-red-50 text-red-800 border border-red-200' },
+  'qr-code':    { label: '<span class="inline-block w-2 h-2 rounded-full bg-yellow-400 mr-1.5"></span>QR Code',     cls: 'bg-yellow-50 text-yellow-800 border border-yellow-200' },
+  'connecting': { label: '<span class="inline-block w-2 h-2 rounded-full bg-blue-400 mr-1.5 animate-pulse"></span>Conectando', cls: 'bg-blue-50 text-blue-800 border border-blue-200' },
+};
+
+function normalizeState(raw) {
+  const s = (raw || 'closed').toLowerCase();
+  // Mapeia variações que podem vir de projetos diferentes
+  if (s === 'connected') return 'open';
+  if (s === 'qrcode')    return 'qr-code';
+  return s;
+}
+
+function renderInstances() {
+  const grid = document.getElementById('instanceGrid');
+  grid.innerHTML = '';
+
+  if (!instances.length) { show('emptyState'); hide('instanceGrid'); return; }
+  hide('emptyState'); show('instanceGrid');
+
+  instances.forEach(inst => {
+    const id     = inst.id || inst.instanceName || '';
+    const displayName = inst.name || id;
+    const jid    = inst.ownerJid || inst.remoteJID || '';
+    const state  = normalizeState(inst._state);
+    const sm     = STATUS_MAP[state] || { label: '❔ ' + state, cls: 'bg-gray-100 text-gray-600' };
+
+    const card = document.createElement('div');
+    card.className = 'bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md transition';
+    card.innerHTML = `
+      <div class="p-5">
+        <div class="flex items-start justify-between gap-2 mb-3">
+          <div class="flex-1 min-w-0">
+            <h3 class="font-bold text-gray-800 truncate">${esc(displayName)}</h3>
+            <p class="text-xs text-gray-400 truncate mt-0.5">${esc(jid || '(não conectado)')}</p>
+          </div>
+          <span class="flex-shrink-0 inline-flex items-center text-xs font-semibold px-2.5 py-1 rounded-full ${sm.cls}">${sm.label}</span>
+        </div>
+
+        ${(inst.Chatwoot?.url || inst.chatwootUrl) ? `<div class="text-xs text-blue-600 bg-blue-50 rounded-lg px-3 py-1.5 mb-2 truncate">🔗 ${esc(inst.Chatwoot?.url || inst.chatwootUrl)}</div>` : ''}
+
+        ${(() => {
+          const sgp = inst.SGP;
+          if (!sgp) return '';
+          const on = sgp.enabled;
+          const tokenSnip = on && sgp.token ? ` · <span class="font-mono">${esc(sgp.token.slice(0,8))}…</span>` : '';
+          return `<div class="flex items-center justify-between text-xs bg-orange-50 border border-orange-100 rounded-lg px-3 py-1.5 mb-2">
+            <span class="${on ? 'text-orange-700 font-semibold' : 'text-gray-400'}">🔶 SGP ${on ? 'ativo' : 'inativo'}${tokenSnip}</span>
+            <button onclick="toggleSGP('${esc(id)}')" class="ml-2 px-2 py-0.5 rounded text-xs font-semibold transition ${on ? 'bg-orange-200 hover:bg-orange-300 text-orange-800' : 'bg-gray-200 hover:bg-gray-300 text-gray-600'}">${on ? 'Desativar' : 'Ativar'}</button>
+          </div>`;
+        })()}
+
+        <div class="flex flex-wrap gap-1 mb-4" id="flags-${esc(id)}">
+          ${inst.rejectCall   ? flag('📵 Rej. chamadas') : ''}
+          ${inst.groupsIgnore ? flag('👥 Ign. grupos')   : ''}
+          ${inst.alwaysOnline ? flag('🟢 Sempre online')  : ''}
+          ${inst.readMessages ? flag('👁️ Leitura auto')   : ''}
+        </div>
+
+        <div class="flex flex-wrap gap-2">
+          ${actionButtons(id, state)}
+        </div>
+      </div>`;
+
+    grid.appendChild(card);
+  });
+}
+
+function flag(t) {
+  return `<span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">${t}</span>`;
+}
+
+function actionButtons(id, state) {
+  const eid = esc(id);
+
+  // Botões de conexão variam pelo estado
+  let mainBtns = '';
+  if (state === 'open') {
+    // Conectada: Reiniciar + Deslogar
+    mainBtns = `
+      <button onclick="restartInstance('${eid}')"
+        class="px-3 py-1.5 text-xs font-semibold bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg transition">
+        🔄 Reiniciar</button>
+      <button onclick="logoutInstance('${eid}')"
+        class="px-3 py-1.5 text-xs font-semibold bg-orange-50 hover:bg-orange-100 text-orange-700 rounded-lg transition">
+        🔌 Deslogar</button>`;
+  } else if (state === 'qr-code' || state === 'connecting') {
+    // Aguardando QR: Ver QR
+    mainBtns = `
+      <button onclick="openQrModal('${eid}')"
+        class="flex-1 px-3 py-1.5 text-xs font-semibold bg-yellow-50 hover:bg-yellow-100 text-yellow-700 rounded-lg transition">
+        📱 Ver QR Code</button>`;
+  } else {
+    // Desconectada: Gerar QR
+    mainBtns = `
+      <button onclick="generateQr('${eid}')"
+        class="flex-1 px-3 py-1.5 text-xs font-semibold bg-green-600 hover:bg-green-700 text-white rounded-lg transition">
+        📷 Gerar QR Code</button>`;
+  }
+
+  const sendBtn = `<button onclick="openSendModal('${eid}')" title="Enviar mensagem"
+    class="px-3 py-1.5 text-xs font-semibold bg-green-50 hover:bg-green-100 text-green-700 rounded-lg transition">
+    💬</button>`;
+
+  const editBtn = `<button onclick="openEditModal('${eid}')" title="Editar"
+    class="px-3 py-1.5 text-xs font-semibold bg-gray-50 hover:bg-gray-100 text-gray-600 rounded-lg transition">
+    ✏️</button>`;
+
+  const delBtn = `<button onclick="deleteInstance('${eid}')" title="Excluir"
+    class="px-3 py-1.5 text-xs font-semibold bg-red-50 hover:bg-red-100 text-red-600 rounded-lg transition">
+    🗑️</button>`;
+
+  return `<div class="flex flex-wrap gap-2 w-full">${mainBtns}${sendBtn}${editBtn}${delBtn}</div>`;
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ══════════════════════════════════════════════════════
+// INSTANCE ACTIONS
+// ══════════════════════════════════════════════════════
+// Gera QR para instância desconectada
+async function generateQr(id) {
+  openQrModal(id);   // abre já com spinner; o poll vai buscar o QR
+}
+
+// Reinicia instância (disconnect + reconnect, mantém sessão — sem QR)
+async function restartInstance(id) {
+  if (!confirm(`Reiniciar "${id}"?\n\nA conexão será restabelecida sem deslogar o número.`)) return;
+  try {
+    await api('DELETE', `/instance/restart/${id}`);
+    toast('Instância reiniciada!', 'success');
+    setTimeout(loadInstances, 1500);
+  } catch(e) {
+    toast('Erro ao reiniciar: ' + (e.data?.error || e.status), 'error');
+  }
+}
+
+async function logoutInstance(id) {
+  if (!confirm(`Deslogar "${id}"?\n\nO número será desvinculado e precisará de novo QR Code.`)) return;
+  try {
+    await api('DELETE', `/instance/logout/${id}`);
+    toast('Deslogado com sucesso.', 'success');
+    setTimeout(loadInstances, 800);
+  } catch(e) {
+    toast('Erro ao deslogar: ' + (e.data?.error || e.status), 'error');
+  }
+}
+
+async function deleteInstance(id) {
+  if (!confirm(`Excluir a instância "${id}"?\n\nEsta ação é irreversível.`)) return;
+  try {
+    await api('DELETE', `/instance/delete/${id}`);
+    toast('Instância excluída.', 'success');
+    setTimeout(loadInstances, 800);
+  } catch(e) {
+    toast('Erro ao excluir: ' + (e.data?.error || e.status), 'error');
+  }
+}
+
+// ══════════════════════════════════════════════════════
+// QR MODAL  (countdown 40s + polling a cada 3s)
+// ══════════════════════════════════════════════════════
+const QR_TIMEOUT = 40; // segundos
+let qrCurrentId  = null;
+let qrCountdown  = 0;
+let qrTickTimer  = null;
+
+function openQrModal(id) {
+  clearInterval(qrPollTimer);
+  clearInterval(qrTickTimer);
+  qrCurrentId = id;
+
+  document.getElementById('qrInstanceName').textContent = id;
+  qrShowState('loading');
+  show('qrModal');
+
+  // Inicia polling imediato
+  pollQr(id);
+  qrPollTimer = setInterval(() => pollQr(id), 3000);
+
+  // Inicia countdown
+  qrCountdown = QR_TIMEOUT;
+  show('qrCountdownWrap');
+  updateCountdown();
+  qrTickTimer = setInterval(() => {
+    qrCountdown--;
+    updateCountdown();
+    if (qrCountdown <= 0) {
+      clearInterval(qrTickTimer);
+      clearInterval(qrPollTimer);
+      qrShowState('expired');
+      hide('qrCountdownWrap');
+    }
+  }, 1000);
+}
+
+function updateCountdown() {
+  const pct = (qrCountdown / QR_TIMEOUT) * 100;
+  document.getElementById('qrCountdownSec').textContent = qrCountdown + 's';
+  const bar = document.getElementById('qrCountdownBar');
+  bar.style.width = pct + '%';
+  // Muda cor conforme o tempo
+  bar.className = bar.className.replace(/bg-\w+-\d+/, pct > 50 ? 'bg-green-500' : pct > 20 ? 'bg-yellow-400' : 'bg-red-500');
+}
+
+function qrShowState(state) {
+  // state: 'loading' | 'qr' | 'connected' | 'expired'
+  document.getElementById('qrSpinner').classList.toggle ('hidden', state !== 'loading');
+  document.getElementById('qrImage').classList.toggle   ('hidden', state !== 'qr');
+  document.getElementById('qrConnected').classList.toggle('hidden', state !== 'connected');
+  document.getElementById('qrExpired').classList.toggle  ('hidden', state !== 'expired');
+
+  const statusText = {
+    loading:   'Aguardando QR Code...',
+    qr:        'Abra o WhatsApp → Dispositivos → Conectar dispositivo',
+    connected: 'WhatsApp conectado com sucesso!',
+    expired:   'O QR Code expirou. Gere um novo.',
+  };
+  document.getElementById('qrStatus').textContent = statusText[state] || '';
+}
+
+async function pollQr(id) {
+  try {
+    const res = await api('GET', `/instance/connect/${id}`);
+    if (res.connected === true) {
+      clearInterval(qrPollTimer);
+      clearInterval(qrTickTimer);
+      hide('qrCountdownWrap');
+      qrShowState('connected');
+      setTimeout(closeQrModal, 2000);
+    } else if (res.base64) {
+      document.getElementById('qrImage').src = res.base64;
+      qrShowState('qr');
+    }
+  } catch {}
+}
+
+function retryQr() {
+  if (qrCurrentId) openQrModal(qrCurrentId);
+}
+
+function closeQrModal() {
+  clearInterval(qrPollTimer);
+  clearInterval(qrTickTimer);
+  qrCurrentId = null;
+  hide('qrModal');
+  loadInstances();
+}
+
+// ══════════════════════════════════════════════════════
+// INSTANCE MODAL
+// ══════════════════════════════════════════════════════
+function openCreateModal() {
+  editingId = null;
+  document.getElementById('modalTitle').textContent = 'Nova Instância';
+  document.getElementById('instanceNameRow').classList.remove('hidden');
+  clearForm();
+  switchModalTab('basic', document.querySelector('.modal-tab[data-tab="basic"]'));
+  show('instanceModal');
+}
+
+function openEditModal(idOrInst) {
+  // Aceita ID (string) ou objeto direto
+  let inst;
+  if (typeof idOrInst === 'string') {
+    inst = instances.find(i => (i.id || i.instanceName || i.name) === idOrInst);
+    if (!inst) { toast('Instância não encontrada', 'error'); return; }
+  } else {
+    inst = idOrInst;
+  }
+  editingId = inst.id || inst.instanceName || inst.name || '';
+  document.getElementById('modalTitle').textContent = `Editar: ${editingId}`;
+  document.getElementById('instanceNameRow').classList.add('hidden');
+  clearForm();
+  fillForm(inst);
+  switchModalTab('basic', document.querySelector('.modal-tab[data-tab="basic"]'));
+  show('instanceModal');
+}
+
+function closeInstanceModal() { hide('instanceModal'); }
+
+async function toggleSGP(id) {
+  const inst = instances.find(i => (i.id || i.instanceName) === id);
+  const current = inst?.SGP?.enabled ?? inst?.sgpEnabled ?? false;
+  try {
+    await api('PUT', `/instance/update/${id}`, { sgpEnabled: !current });
+    toast(`SGP ${!current ? 'ativado — abra o Edit para copiar o token' : 'desativado'}`, 'success');
+    await loadInstances();
+  } catch(e) {
+    toast('Erro: ' + JSON.stringify(e.data || e), 'error');
+  }
+}
+
+function copyText(text, msg) {
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => toast(msg, 'success')).catch(() => copyFallback(text, msg));
+  } else {
+    copyFallback(text, msg);
+  }
+}
+function copyFallback(text, msg) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); toast(msg, 'success'); } catch { toast('Erro ao copiar', 'error'); }
+  document.body.removeChild(ta);
+}
+
+function copySgpToken() {
+  const val = document.getElementById('f_sgpToken').value;
+  if (!val) { toast('Nenhum token para copiar', 'error'); return; }
+  copyText(val, 'Token copiado!');
+}
+
+function buildSgpConfig() {
+  const instanceId = editingId || (document.getElementById('f_instanceName') || {}).value || '<instancia>';
+  const token = document.getElementById('f_sgpToken').value || '<token>';
+  const baseUrl = (BASE_URL || window.location.origin).replace(/\/v1\/?$/, '');
+  const url = `${baseUrl}/webhook/sgp/${instanceId}`;
+  return JSON.stringify({
+    request_json: 1,
+    do_post: 1,
+    token: token,
+    url: url,
+    instance: instanceId,
+    set_to: 'numero',
+    set_msg: 'mensagem'
+  }, null, 2);
+}
+
+function updateSgpConfigPreview() {
+  const el = document.getElementById('sgpConfigPreview');
+  if (el) el.textContent = buildSgpConfig();
+}
+
+function copySgpConfig() {
+  copyText(buildSgpConfig(), 'Configuração copiada!');
+}
+
+function clearForm() {
+  const fields = ['f_instanceName','f_name','f_token','f_number','f_msgCall',
+    'f_chatwootUrl','f_chatwootAccountId','f_chatwootToken','f_chatwootNameInbox',
+    'f_webhookUrl','f_proxyHost','f_proxyPort','f_proxyUsername','f_proxyPassword'];
+  fields.forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const chks = ['f_rejectCall','f_groupsIgnore','f_alwaysOnline','f_readMessages','f_syncFullHistory',
+    'f_chatwootSignMsg','f_chatwootReopenConversation','f_chatwootConversationPending',
+    'f_chatwootImportContacts','f_chatwootMergeBrazil','f_chatwootImportMessages',
+    'f_webhookBase64','f_webhookByEvents','f_sgpEnabled','f_sgpSyncChatwoot'];
+  chks.forEach(id => { const el = document.getElementById(id); if (el) el.checked = false; });
+  ['f_sgpToken','f_sgpAllowedIPs'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  document.getElementById('f_chatwootDaysLimit').value = '';
+  document.getElementById('f_proxyProtocol').value = '';
+}
+
+function fillForm(inst) {
+  sv('f_name',     inst.name);
+  sv('f_token',    inst.token);
+  sv('f_number',   inst.number);
+  sv('f_msgCall',  inst.msgCall);
+  sc('f_rejectCall',    inst.rejectCall);
+  sc('f_groupsIgnore',  inst.groupsIgnore);
+  sc('f_alwaysOnline',  inst.alwaysOnline);
+  sc('f_readMessages',  inst.readMessages);
+  sc('f_syncFullHistory', inst.syncFullHistory);
+  // Suporta formato flat (nosso) e objeto aninhado Chatwoot (Evolution API)
+  const cw = inst.Chatwoot || {};
+  sv('f_chatwootUrl',       cw.url       || inst.chatwootUrl);
+  sv('f_chatwootAccountId', cw.accountId || inst.chatwootAccountId || inst.chatwootAccountID);
+  sv('f_chatwootToken',     cw.token     || inst.chatwootToken);
+  sv('f_chatwootNameInbox', cw.nameInbox || inst.chatwootNameInbox);
+  const days = cw.daysLimitImportMessages ?? inst.chatwootDaysLimitImportMessages;
+  if (days) document.getElementById('f_chatwootDaysLimit').value = days;
+  sc('f_chatwootSignMsg',             cw.signMsg             ?? inst.chatwootSignMsg);
+  sc('f_chatwootReopenConversation',  cw.reopenConversation  ?? inst.chatwootReopenConversation);
+  sc('f_chatwootConversationPending', cw.conversationPending ?? inst.chatwootConversationPending);
+  sc('f_chatwootImportContacts',      cw.importContacts      ?? inst.chatwootImportContacts);
+  sc('f_chatwootMergeBrazil',         cw.mergeBrazilContacts ?? inst.chatwootMergeBrazilContacts);
+  sc('f_chatwootImportMessages',      cw.importMessages      ?? inst.chatwootImportMessages);
+  if (inst.webhook) {
+    sv('f_webhookUrl', inst.webhook.url);
+    sc('f_webhookBase64',   inst.webhook.base64);
+    sc('f_webhookByEvents', inst.webhook.byEvents);
+  }
+  sv('f_proxyHost',     inst.proxyHost);
+  sv('f_proxyPort',     inst.proxyPort);
+  sv('f_proxyUsername', inst.proxyUsername);
+  sv('f_proxyPassword', inst.proxyPassword);
+  if (inst.proxyProtocol) document.getElementById('f_proxyProtocol').value = inst.proxyProtocol;
+  const sgp = inst.SGP || {};
+  sc('f_sgpEnabled', sgp.enabled ?? inst.sgpEnabled ?? false);
+  sv('f_sgpToken', sgp.token || inst.sgpToken || '');
+  sv('f_sgpAllowedIPs', sgp.allowedIPs || inst.sgpAllowedIPs || '');
+  sc('f_sgpSyncChatwoot', sgp.syncChatwoot ?? inst.sgpSyncChatwoot ?? false);
+}
+
+function sv(id, val) { if (val != null && val !== '') { const el = document.getElementById(id); if (el) el.value = val; } }
+function sc(id, val) { const el = document.getElementById(id); if (el) el.checked = !!val; }
+
+async function saveInstance() {
+  if (editingId) await updateInstance();
+  else await createInstance();
+}
+
+async function createInstance() {
+  const name = document.getElementById('f_instanceName').value.trim();
+  if (!name) { toast('Informe o nome da instância', 'error'); return; }
+  try {
+    await api('POST', '/instance/create', buildCreateBody(name));
+    toast('Instância criada!', 'success');
+    closeInstanceModal();
+    setTimeout(loadInstances, 800);
+  } catch(e) {
+    toast('Erro: ' + JSON.stringify(e.data || e), 'error');
+  }
+}
+
+async function updateInstance() {
+  const tokenWasEmpty = !gv('f_sgpToken');
+  try {
+    await api('PUT', `/instance/update/${editingId}`, buildUpdateBody());
+    await loadInstances();
+    if (tokenWasEmpty && gc('f_sgpEnabled')) {
+      // Token foi regenerado — buscar o novo da lista atualizada
+      const updated = instances.find(i => (i.id || i.instanceName) === editingId);
+      const newToken = updated?.SGP?.token || '';
+      if (newToken) {
+        document.getElementById('f_sgpToken').value = newToken;
+        updateSgpConfigPreview();
+        switchModalTab('sgp', document.querySelector('.modal-tab[data-tab="sgp"]'));
+        toast('Novo token gerado — copie antes de fechar!', 'success');
+        return;
+      }
+    }
+    toast('Atualizada!', 'success');
+    closeInstanceModal();
+  } catch(e) {
+    toast('Erro: ' + JSON.stringify(e.data || e), 'error');
+  }
+}
+
+function buildCreateBody(name) {
+  const wh = gv('f_webhookUrl') ? { url: gv('f_webhookUrl'), base64: gc('f_webhookBase64'), byEvents: gc('f_webhookByEvents') } : undefined;
+  return {
+    instanceName:    name,
+    name:            gv('f_name')    || undefined,
+    token:           gv('f_token')   || undefined,
+    number:          gv('f_number')  || undefined,
+    msgCall:         gv('f_msgCall') || undefined,
+    rejectCall:      gc('f_rejectCall'),
+    groupsIgnore:    gc('f_groupsIgnore'),
+    alwaysOnline:    gc('f_alwaysOnline'),
+    readMessages:    gc('f_readMessages'),
+    syncFullHistory: gc('f_syncFullHistory'),
+    chatwootUrl:       gv('f_chatwootUrl')       || undefined,
+    chatwootAccountId: gv('f_chatwootAccountId') || undefined,
+    chatwootToken:     gv('f_chatwootToken')     || undefined,
+    chatwootNameInbox: gv('f_chatwootNameInbox') || undefined,
+    chatwootDaysLimitImportMessages: gn('f_chatwootDaysLimit'),
+    chatwootSignMsg:             gc('f_chatwootSignMsg'),
+    chatwootReopenConversation:  gc('f_chatwootReopenConversation'),
+    chatwootConversationPending: gc('f_chatwootConversationPending'),
+    chatwootImportContacts:      gc('f_chatwootImportContacts'),
+    chatwootMergeBrazilContacts: gc('f_chatwootMergeBrazil'),
+    chatwootImportMessages:      gc('f_chatwootImportMessages'),
+    webhook:     wh,
+    proxyHost:     gv('f_proxyHost')     || undefined,
+    proxyPort:     gv('f_proxyPort')     || undefined,
+    proxyProtocol: document.getElementById('f_proxyProtocol').value || undefined,
+    proxyUsername: gv('f_proxyUsername') || undefined,
+    proxyPassword: gv('f_proxyPassword') || undefined,
+    sgpEnabled: gc('f_sgpEnabled'),
+    sgpToken: gv('f_sgpToken') || undefined,
+    sgpAllowedIPs: gv('f_sgpAllowedIPs') || undefined,
+    sgpSyncChatwoot: gc('f_sgpSyncChatwoot'),
+  };
+}
+
+function buildUpdateBody() {
+  const wh = gv('f_webhookUrl') ? { url: gv('f_webhookUrl'), base64: gc('f_webhookBase64'), byEvents: gc('f_webhookByEvents') } : undefined;
+  return {
+    name:            gv('f_name')    || undefined,
+    rejectCall:      gc('f_rejectCall'),
+    msgCall:         gv('f_msgCall') || undefined,
+    groupsIgnore:    gc('f_groupsIgnore'),
+    alwaysOnline:    gc('f_alwaysOnline'),
+    readMessages:    gc('f_readMessages'),
+    readStatus:      gc('f_readStatus'),
+    syncFullHistory: gc('f_syncFullHistory'),
+    chatwootUrl:       gv('f_chatwootUrl')       || undefined,
+    chatwootAccountId: gv('f_chatwootAccountId') || undefined,
+    chatwootToken:     gv('f_chatwootToken')     || undefined,
+    chatwootNameInbox: gv('f_chatwootNameInbox') || undefined,
+    chatwootDaysLimitImportMessages: gn('f_chatwootDaysLimit'),
+    chatwootSignMsg:             gc('f_chatwootSignMsg') || undefined,
+    chatwootReopenConversation:  gc('f_chatwootReopenConversation') || undefined,
+    chatwootConversationPending: gc('f_chatwootConversationPending') || undefined,
+    chatwootImportContacts:      gc('f_chatwootImportContacts') || undefined,
+    chatwootMergeBrazilContacts: gc('f_chatwootMergeBrazil') || undefined,
+    chatwootImportMessages:      gc('f_chatwootImportMessages') || undefined,
+    webhook:     wh,
+    proxyHost:     gv('f_proxyHost')     || undefined,
+    proxyPort:     gv('f_proxyPort')     || undefined,
+    proxyProtocol: document.getElementById('f_proxyProtocol').value || undefined,
+    proxyUsername: gv('f_proxyUsername') || undefined,
+    proxyPassword: gv('f_proxyPassword') || undefined,
+    sgpEnabled: gc('f_sgpEnabled'),
+    sgpToken: gv('f_sgpToken') || '',
+    sgpAllowedIPs: gv('f_sgpAllowedIPs') || '',
+    sgpSyncChatwoot: gc('f_sgpSyncChatwoot'),
+  };
+}
+
+function gv(id) { return document.getElementById(id)?.value.trim(); }
+function gc(id) { return document.getElementById(id)?.checked || false; }
+function gn(id) { const v = document.getElementById(id)?.value.trim(); return v ? parseInt(v) : undefined; }
+
+// ══════════════════════════════════════════════════════
+// SEND MESSAGE MODAL
+// ══════════════════════════════════════════════════════
+function openSendModal(id) {
+  sendInst = id;
+  sendType = 'text';
+  document.getElementById('sendModalInstance').textContent = 'Instância: ' + id;
+  document.getElementById('sendResult').classList.add('hidden');
+  ['s_number','s_text','s_audio','s_imageUrl','s_imageCaption','s_docUrl','s_docName','s_docMime']
+    .forEach(i => { const el = document.getElementById(i); if (el) el.value = ''; });
+  switchSendTab('text', document.querySelector('.send-tab[data-type="text"]'));
+  show('sendModal');
+}
+function closeSendModal() { hide('sendModal'); }
+
+function switchSendTab(type, btn) {
+  sendType = type;
+  document.querySelectorAll('.send-tab').forEach(b => {
+    b.className = b.className
+      .replace('border-green-600 text-green-700 font-semibold', '')
+      .replace('border-transparent text-gray-500 hover:text-gray-700', '')
+      .trim() + ' border-transparent text-gray-500 hover:text-gray-700';
+  });
+  btn.className = btn.className
+    .replace('border-transparent text-gray-500 hover:text-gray-700', '')
+    .trim() + ' border-green-600 text-green-700 font-semibold';
+  ['text','audio','image','document'].forEach(t => {
+    document.getElementById('send-' + t).classList.toggle('hidden', t !== type);
+  });
+}
+
+async function sendMessage() {
+  const number = gv('s_number');
+  if (!number) { toast('Informe o número', 'error'); return; }
+
+  const btn = document.getElementById('sendBtn');
+  btn.disabled = true;
+  btn.textContent = 'Enviando...';
+
+  // Rotas padrão Evolution API
+  let path, body;
+  try {
+    if (sendType === 'text') {
+      const text = document.getElementById('s_text').value.trim();
+      if (!text) { toast('Informe a mensagem', 'error'); return; }
+      path = `/message/sendText/${sendInst}`;
+      body = { number, text };
+
+    } else if (sendType === 'audio') {
+      const audio = gv('s_audio');
+      if (!audio) { toast('Informe a URL do áudio', 'error'); return; }
+      path = `/message/sendWhatsAppAudio/${sendInst}`;
+      body = { number, audio };
+
+    } else if (sendType === 'image') {
+      const media = gv('s_imageUrl');
+      if (!media) { toast('Informe a URL da imagem', 'error'); return; }
+      path = `/message/sendMedia/${sendInst}`;
+      body = { number, mediatype: 'image', media, caption: gv('s_imageCaption') || undefined };
+
+    } else if (sendType === 'document') {
+      const media = gv('s_docUrl');
+      if (!media) { toast('Informe a URL do arquivo', 'error'); return; }
+      path = `/message/sendMedia/${sendInst}`;
+      body = {
+        number,
+        mediatype: 'document',
+        media,
+        fileName: gv('s_docName') || 'document',
+        mimetype: gv('s_docMime') || 'application/octet-stream',
+      };
+    }
+
+    const res = await api('POST', path, body);
+    const el = document.getElementById('sendResult');
+    el.textContent = '✅ ID: ' + (res?.key?.id || JSON.stringify(res));
+    el.className = 'rounded-lg p-3 text-xs font-mono break-all bg-green-50 text-green-800';
+    el.classList.remove('hidden');
+    toast('Mensagem enviada!', 'success');
+  } catch(e) {
+    const el = document.getElementById('sendResult');
+    el.textContent = '❌ ' + JSON.stringify(e.data || e);
+    el.className = 'rounded-lg p-3 text-xs font-mono break-all bg-red-50 text-red-800';
+    el.classList.remove('hidden');
+    toast('Erro ao enviar', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Enviar';
+  }
+}
+
+// ══════════════════════════════════════════════════════
+// MODAL TABS
+// ══════════════════════════════════════════════════════
+function switchModalTab(tabId, btn) {
+  ['basic','chatwoot','webhook','proxy','sgp'].forEach(t => {
+    document.getElementById('tab-' + t).classList.toggle('hidden', t !== tabId);
+  });
+  if (tabId === 'sgp') updateSgpConfigPreview();
+  document.querySelectorAll('.modal-tab').forEach(b => {
+    b.className = b.className
+      .replace('border-green-600 text-green-700 font-semibold', '')
+      .replace('border-transparent text-gray-500 hover:text-gray-700', '')
+      .trim() + ' border-transparent text-gray-500 hover:text-gray-700';
+  });
+  if (btn) btn.className = btn.className
+    .replace('border-transparent text-gray-500 hover:text-gray-700', '')
+    .trim() + ' border-green-600 text-green-700 font-semibold';
+}
+
+// ══════════════════════════════════════════════════════
+// TOAST
+// ══════════════════════════════════════════════════════
+let toastTimer;
+function toast(msg, type = 'success') {
+  const el    = document.getElementById('toast');
+  const inner = document.getElementById('toastInner');
+  document.getElementById('toastMsg').textContent = msg;
+  inner.className = 'px-4 py-3 rounded-lg shadow-lg text-sm font-medium text-white ' +
+    (type === 'error' ? 'bg-red-600' : 'bg-green-600');
+  el.classList.remove('hidden');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.add('hidden'), 4000);
+}
+
+// ══════════════════════════════════════════════════════
+// SGP WIKI TOGGLE
+// ══════════════════════════════════════════════════════
+function toggleSgpWiki(btn) {
+  const body = btn.nextElementSibling;
+  const arrow = btn.querySelector('.sgp-wiki-arrow');
+  const open = body.classList.toggle('hidden');
+  arrow.style.transform = open ? '' : 'rotate(180deg)';
+}
+
+// ══════════════════════════════════════════════════════
+// UTILS
+// ══════════════════════════════════════════════════════
+function show(id) { document.getElementById(id).classList.remove('hidden'); }
+function hide(id) { document.getElementById(id).classList.add('hidden'); }
+
+// Fechar modais clicando fora
+['instanceModal','sendModal','setupModal'].forEach(id => {
+  document.getElementById(id)?.addEventListener('click', e => {
+    if (e.target.id === id) hide(id);
+  });
+});
+document.getElementById('qrModal')?.addEventListener('click', e => {
+  if (e.target.id === 'qrModal') closeQrModal();
+});
+</script>
+</body>
+</html>

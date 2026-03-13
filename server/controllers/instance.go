@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"context"
 	"fmt"
+	"github.com/google/uuid"
 	"github.com/verbeux-ai/whatsmiau/lib/whatsmiau"
 	"github.com/verbeux-ai/whatsmiau/models"
 	"github.com/verbeux-ai/whatsmiau/env"
@@ -43,6 +44,7 @@ func (s *Instance) Create(ctx echo.Context) error {
 
 	instance := models.Instance{
 		ID:          request.InstanceName,
+		Name:        request.Name,
 		Integration: request.Integration,
 		Token:       request.Token,
 		QRCode:      request.QRCode,
@@ -55,6 +57,9 @@ func (s *Instance) Create(ctx echo.Context) error {
 		ReadMessages:    request.ReadMessages,
 		ReadStatus:      request.ReadStatus,
 		SyncFullHistory: request.SyncFullHistory,
+		SGPEnabled:      request.SGPEnabled,
+		SGPAllowedIPs:   request.SGPAllowedIPs,
+		SGPSyncChatwoot: request.SGPSyncChatwoot,
 
 		Webhook: request.Webhook,
 
@@ -82,6 +87,13 @@ func (s *Instance) Create(ctx echo.Context) error {
 			ProxyPassword: request.ProxyPassword,
 		},
 	}
+
+	// Auto-generate SGPToken if SGP enabled and no token provided
+	sgpToken := request.SGPToken
+	if instance.SGPEnabled && sgpToken == "" {
+		sgpToken = uuid.New().String()
+	}
+	instance.SGPToken = sgpToken
 
 	c := ctx.Request().Context()
 
@@ -199,6 +211,55 @@ func (s *Instance) Update(ctx echo.Context) error {
 		}
 	}
 
+	// ---------- Name ----------
+	if request.Name != nil {
+		current.Name = *request.Name
+	}
+
+	// ---------- Behavioral ----------
+	if request.RejectCall != nil {
+		current.RejectCall = *request.RejectCall
+	}
+	if request.MsgCall != nil {
+		current.MsgCall = *request.MsgCall
+	}
+	if request.GroupsIgnore != nil {
+		current.GroupsIgnore = *request.GroupsIgnore
+	}
+	if request.AlwaysOnline != nil {
+		current.AlwaysOnline = *request.AlwaysOnline
+	}
+	if request.ReadMessages != nil {
+		current.ReadMessages = *request.ReadMessages
+	}
+	if request.ReadStatus != nil {
+		current.ReadStatus = *request.ReadStatus
+	}
+	if request.SyncFullHistory != nil {
+		current.SyncFullHistory = *request.SyncFullHistory
+	}
+	if request.SGPEnabled != nil {
+		current.SGPEnabled = *request.SGPEnabled
+	}
+	if request.SGPToken != nil {
+		if *request.SGPToken == "" && current.SGPEnabled {
+			// regenerate
+			current.SGPToken = uuid.New().String()
+		} else if *request.SGPToken != "" {
+			current.SGPToken = *request.SGPToken
+		}
+	}
+	// auto-generate token if SGP just enabled and no token yet
+	if current.SGPEnabled && current.SGPToken == "" {
+		current.SGPToken = uuid.New().String()
+	}
+	if request.SGPAllowedIPs != nil {
+		current.SGPAllowedIPs = *request.SGPAllowedIPs
+	}
+	if request.SGPSyncChatwoot != nil {
+		current.SGPSyncChatwoot = *request.SGPSyncChatwoot
+	}
+
 	// ---------- Chatwoot ----------
 	if request.ChatwootAccountID != nil {
 		current.ChatwootAccountID = *request.ChatwootAccountID
@@ -299,10 +360,65 @@ func (s *Instance) List(ctx echo.Context) error {
 			zap.L().Error("failed to parse jid", zap.Error(err))
 		}
 
+		connStatus, _ := s.whatsmiau.Status(instance.ID)
+
+		var chatwoot *dto.ChatwootInstanceInfo
+		if instance.ChatwootURL != "" || instance.ChatwootToken != "" {
+			chatwoot = &dto.ChatwootInstanceInfo{
+				Enabled:                 instance.ChatwootURL != "" && instance.ChatwootToken != "",
+				AccountID:               instance.ChatwootAccountID,
+				Token:                   instance.ChatwootToken,
+				URL:                     instance.ChatwootURL,
+				NameInbox:               instance.ChatwootNameInbox,
+				SignMsg:                 instance.ChatwootSignMsg,
+				ReopenConversation:      instance.ChatwootReopenConversation,
+				ConversationPending:     instance.ChatwootConversationPending,
+				MergeBrazilContacts:     instance.ChatwootMergeBrazilContacts,
+				ImportContacts:          instance.ChatwootImportContacts,
+				ImportMessages:          instance.ChatwootImportMessages,
+				DaysLimitImportMessages: instance.ChatwootDaysLimitImportMessages,
+				Organization:            instance.ChatwootOrganization,
+				Logo:                    instance.ChatwootLogo,
+				IgnoreJids:              []string{},
+			}
+		}
+
+		sgpInfo := &dto.SGPInstanceInfo{
+			Enabled:      instance.SGPEnabled,
+			Token:        instance.SGPToken,
+			AllowedIPs:   instance.SGPAllowedIPs,
+			SyncChatwoot: instance.SGPSyncChatwoot,
+		}
+
 		response = append(response, dto.ListInstancesResponse{
-			Instance:     &instance,
-			OwnerJID:     jid.ToNonAD().String(),
-			InstanceName: instance.ID,
+			InstanceBaseInfo: dto.InstanceBaseInfo{
+				ID:              instance.ID,
+				Name:            instance.Name,
+				Integration:     instance.Integration,
+				Token:           instance.Token,
+				QRCode:          instance.QRCode,
+				Number:          instance.Number,
+				RejectCall:      instance.RejectCall,
+				MsgCall:         instance.MsgCall,
+				GroupsIgnore:    instance.GroupsIgnore,
+				AlwaysOnline:    instance.AlwaysOnline,
+				ReadMessages:    instance.ReadMessages,
+				ReadStatus:      instance.ReadStatus,
+				SyncFullHistory: instance.SyncFullHistory,
+				RemoteJID:       instance.RemoteJID,
+				Webhook:         instance.Webhook,
+				ProxyHost:       instance.ProxyHost,
+				ProxyPort:       instance.ProxyPort,
+				ProxyProtocol:   instance.ProxyProtocol,
+				ProxyUsername:   instance.ProxyUsername,
+				ProxyPassword:   instance.ProxyPassword,
+			},
+			OwnerJID:         jid.ToNonAD().String(),
+			InstanceName:     instance.ID,
+			Name:             instance.ID,
+			ConnectionStatus: string(connStatus),
+			Chatwoot:         chatwoot,
+			SGP:              sgpInfo,
 		})
 	}
 
@@ -416,6 +532,26 @@ func (s *Instance) Status(ctx echo.Context) error {
 			State:        string(status),
 		},
 	})
+}
+
+func (s *Instance) Restart(ctx echo.Context) error {
+	c := ctx.Request().Context()
+	id := ctx.Param("id")
+	if id == "" {
+		return utils.HTTPFail(ctx, http.StatusBadRequest, nil, "missing instance id")
+	}
+
+	result, err := s.repo.List(c, id)
+	if err != nil || len(result) == 0 {
+		return utils.HTTPFail(ctx, http.StatusNotFound, nil, "instance not found")
+	}
+
+	if err := s.whatsmiau.Restart(id); err != nil {
+		zap.L().Error("failed to restart instance", zap.Error(err))
+		return utils.HTTPFail(ctx, http.StatusInternalServerError, err, "failed to restart instance")
+	}
+
+	return ctx.JSON(http.StatusOK, map[string]string{"message": "instance restarted successfully"})
 }
 
 func (s *Instance) Logout(ctx echo.Context) error {

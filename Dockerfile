@@ -11,7 +11,9 @@ RUN go mod download
 COPY . .
 
 # Enable CGO
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o whatsmiau main.go
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=1 GOOS=linux go build -o whatsmiau main.go
 
 FROM alpine:latest
 

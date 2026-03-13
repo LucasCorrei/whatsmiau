@@ -1,18 +1,21 @@
 version: '3.8'
 
+# Copie este arquivo para docker-compose.yml e preencha com seus dados:
+#   cp docker-compose.example.yml docker-compose.yml
+
 services:
   whatsmiau:
     build: .
     container_name: whatsmiau
     ports:
-      - "8081:8081"
-    environment:
-      - REDIS_URL=redis:6379
-      - DB_URL=postgres://whatsmiau:123123123@localhost:5432/whatsmiau?sslmode=disable
+      - "${PORT:-8081}:8081"
+    env_file:
+      - .env
     volumes:
       - whatsmeow:/app/data
     depends_on:
       - redis
+      - db
     restart: unless-stopped
 
   redis:
@@ -29,12 +32,14 @@ services:
       - pg-data:/pg-data
     restart: unless-stopped
     environment:
-      POSTGRES_USER: whatsmiau
-      POSTGRES_PASSWORD: 123456
-      POSTGRES_DB: whatsmiau
+      POSTGRES_USER: ${POSTGRES_USER:-whatsmiau}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-whatsmiau}
 
 volumes:
   redis-data:
     driver: local
   whatsmeow:
+    driver: local
+  pg-data:
     driver: local

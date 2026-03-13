@@ -68,10 +68,28 @@ func (s *RedisInstance) Update(ctx context.Context, id string, toUpdate *models.
 
 	oldInstance := result[0]
 
+	// ---------- Name ----------
+	if toUpdate.Name != "" {
+		oldInstance.Name = toUpdate.Name
+	}
+
 	// ---------- RemoteJID ----------
 	if len(toUpdate.RemoteJID) > 0 {
 		oldInstance.RemoteJID = toUpdate.RemoteJID
 	}
+
+	// ---------- Behavioral ----------
+	oldInstance.RejectCall = toUpdate.RejectCall
+	oldInstance.MsgCall = toUpdate.MsgCall
+	oldInstance.GroupsIgnore = toUpdate.GroupsIgnore
+	oldInstance.AlwaysOnline = toUpdate.AlwaysOnline
+	oldInstance.ReadMessages = toUpdate.ReadMessages
+	oldInstance.ReadStatus = toUpdate.ReadStatus
+	oldInstance.SyncFullHistory = toUpdate.SyncFullHistory
+	oldInstance.SGPEnabled = toUpdate.SGPEnabled
+	oldInstance.SGPToken = toUpdate.SGPToken
+	oldInstance.SGPAllowedIPs = toUpdate.SGPAllowedIPs
+	oldInstance.SGPSyncChatwoot = toUpdate.SGPSyncChatwoot
 
 	// ---------- Webhook ----------
 	if toUpdate.Webhook != nil {

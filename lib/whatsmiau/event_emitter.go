@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	goredis "github.com/go-redis/redis/v8"
 	"github.com/emersion/go-vcard"
 	"github.com/google/uuid"
 	"github.com/verbeux-ai/whatsmiau/models"
@@ -163,6 +164,8 @@ func (s *Whatsmiau) Handle(id string) whatsmeow.EventHandler {
 			switch e := evt.(type) {
 			case *events.LoggedOut:
 				s.handleLoggedOut(id)
+			case *events.Connected:
+				s.handleConnectedEvent(id, instance)
 			case *events.Message:
 				s.handleMessageEvent(id, instance, e, webhookEventMap, chatwootEventMap)
 			case *events.Receipt:
@@ -179,6 +182,10 @@ func (s *Whatsmiau) Handle(id string) whatsmeow.EventHandler {
 				s.handleGroupInfoEvent(id, instance, e, webhookEventMap, chatwootEventMap)
 			case *events.PushName:
 				s.handlePushNameEvent(id, instance, e, webhookEventMap, chatwootEventMap)
+			case *events.CallOffer:
+				s.handleCallOffer(id, instance, e.BasicCallMeta)
+			case *events.CallOfferNotice:
+				s.handleCallOffer(id, instance, e.BasicCallMeta)
 			default:
 				zap.L().Debug("unknown event", zap.String("type", fmt.Sprintf("%T", evt)), zap.Any("raw", evt))
 			}
@@ -219,7 +226,9 @@ func (s *Whatsmiau) handleMessageEvent(id string, instance *models.Instance, e *
 					zap.String("by", e.Info.Sender.String()),
 				)
 				if shouldEmitChatwoot && hasChatwoot(instance) {
-					go s.handleChatwootDelete(id, instance, deletedID)
+					// Resolve LID JID to phone JID so Chatwoot can find the contact
+					chatJID, _ := s.GetJidLid(context.Background(), id, e.Info.Chat)
+					go s.handleChatwootDelete(id, instance, deletedID, chatJID)
 				}
 				return
 
@@ -231,6 +240,7 @@ func (s *Whatsmiau) handleMessageEvent(id string, instance *models.Instance, e *
 					}
 				}
 				editedID := proto.GetKey().GetID()
+				fromMe := proto.GetKey().GetFromMe()
 				zap.L().Info("✏️ message edited",
 					zap.String("instance", id),
 					zap.String("message_id", editedID),
@@ -238,7 +248,9 @@ func (s *Whatsmiau) handleMessageEvent(id string, instance *models.Instance, e *
 					zap.String("new_text", newText),
 				)
 				if shouldEmitChatwoot && hasChatwoot(instance) && newText != "" {
-					go s.handleChatwootEdit(id, instance, editedID, newText)
+					// Resolve LID JID to phone JID so Chatwoot can find the contact
+					chatJID, _ := s.GetJidLid(context.Background(), id, e.Info.Chat)
+					go s.handleChatwootEdit(id, instance, editedID, newText, fromMe, chatJID)
 				}
 				return
 
@@ -288,6 +300,23 @@ func (s *Whatsmiau) handleMessageEvent(id string, instance *models.Instance, e *
 
 	if shouldEmitChatwoot && hasChatwoot(instance) {
 		go s.handleChatwootMessage(id, instance, messageData)
+	}
+
+	// readMessages: marca como lida no WhatsApp assim que a mensagem chega
+	if instance.ReadMessages && !e.Info.IsFromMe {
+		go func() {
+			client, ok := s.clients.Load(id)
+			if !ok {
+				return
+			}
+			sender := e.Info.Chat
+			if e.Info.IsGroup {
+				sender = e.Info.Sender
+			}
+			if err := client.MarkRead(context.TODO(), []string{e.Info.ID}, time.Now(), e.Info.Chat, sender); err != nil {
+				zap.L().Warn("readMessages: erro ao marcar mensagem como lida", zap.Error(err))
+			}
+		}()
 	}
 }
 
@@ -819,9 +848,23 @@ func (s *Whatsmiau) convertEventMessage(id string, instance *models.Instance, ev
 		}
 	}
 
+	// Quando fromMe=true, pushName é o operador, não o destinatário.
+	// Tenta buscar o nome do destinatário no store local do whatsmeow.
+	var contactName string
+	if e.Info.IsFromMe {
+		if info, err := client.Store.Contacts.GetContact(ctx, evt.Info.Chat); err == nil {
+			if info.PushName != "" {
+				contactName = info.PushName
+			} else if info.BusinessName != "" {
+				contactName = info.BusinessName
+			}
+		}
+	}
+
 	return &WookMessageData{
 		Key:              key,
 		PushName:         strings.TrimSpace(e.Info.PushName),
+		ContactName:      contactName,
 		Status:           status,
 		Message:          raw,
 		ContextInfo:      &messageContext,
@@ -1134,20 +1177,408 @@ func (s *Whatsmiau) handleChatwootMessage(id string, instance *models.Instance, 
 	svc.HandleMessage(id, messageData, opts)
 }
 
-func (s *Whatsmiau) handleChatwootDelete(id string, instance *models.Instance, messageID string) {
-	svc := NewChatwootService(ChatwootConfig{
-		URL:       instance.ChatwootURL,
-		AccountID: instance.ChatwootAccountID,
-		Token:     instance.ChatwootToken,
-	})
-	svc.HandleMessageDelete(id, messageID)
+// NotifySGPMessage sends an outgoing text message to Chatwoot on behalf of the SGP
+// integration, without changing the conversation status. Only runs if the
+// instance has both Chatwoot configured and SGPSyncChatwoot enabled.
+func (s *Whatsmiau) NotifySGPMessage(ctx context.Context, instanceID, toPhone, text, msgID string) {
+	instance := s.getInstanceCached(instanceID)
+	if instance == nil || !instance.SGPSyncChatwoot || !hasChatwoot(instance) {
+		return
+	}
+
+	messageData := &WookMessageData{
+		Key: &WookKey{
+			RemoteJid: toPhone + "@s.whatsapp.net",
+			FromMe:    true,
+			Id:        msgID,
+		},
+		Status:           "DELIVERY_ACK",
+		Message:          &WookMessageRaw{Conversation: text},
+		MessageType:      "conversation",
+		MessageTimestamp: int(time.Now().Unix()),
+		InstanceId:       instanceID,
+	}
+
+	go s.handleChatwootMessageKeepStatus(instanceID, instance, messageData)
 }
 
-func (s *Whatsmiau) handleChatwootEdit(id string, instance *models.Instance, messageID, newText string) {
+// NotifySGPMediaURL downloads media from mediaURL and sends it as an attachment
+// to Chatwoot without changing the conversation status.
+// msgType must be "imageMessage" or "documentMessage".
+func (s *Whatsmiau) NotifySGPMediaURL(ctx context.Context, instanceID, toPhone, mediaURL, mimetype, filename, caption, msgID, msgType string) {
+	instance := s.getInstanceCached(instanceID)
+	if instance == nil || !instance.SGPSyncChatwoot || !hasChatwoot(instance) {
+		return
+	}
+
+	go func() {
+		httpClient := &http.Client{Timeout: 30 * time.Second}
+		resp, err := httpClient.Get(mediaURL)
+		if err != nil {
+			zap.L().Error("sgp: falha ao baixar mídia para Chatwoot", zap.String("url", mediaURL), zap.Error(err))
+			return
+		}
+		defer resp.Body.Close()
+
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			zap.L().Error("sgp: falha ao ler mídia para Chatwoot", zap.Error(err))
+			return
+		}
+
+		b64 := base64.StdEncoding.EncodeToString(data)
+
+		var msg *WookMessageRaw
+		switch msgType {
+		case "imageMessage":
+			msg = &WookMessageRaw{
+				Base64: b64,
+				ImageMessage: &WookImageMessageRaw{
+					Mimetype: mimetype,
+					Caption:  caption,
+				},
+			}
+		default: // documentMessage
+			msg = &WookMessageRaw{
+				Base64: b64,
+				DocumentMessage: &WookDocumentMessageRaw{
+					Mimetype: mimetype,
+					FileName: filename,
+					Caption:  caption,
+				},
+			}
+		}
+
+		messageData := &WookMessageData{
+			Key: &WookKey{
+				RemoteJid: toPhone + "@s.whatsapp.net",
+				FromMe:    true,
+				Id:        msgID,
+			},
+			Status:           "DELIVERY_ACK",
+			Message:          msg,
+			MessageType:      msgType,
+			MessageTimestamp: int(time.Now().Unix()),
+			InstanceId:       instanceID,
+		}
+
+		s.handleChatwootMessageKeepStatus(instanceID, instance, messageData)
+	}()
+}
+
+// NotifySGPMediaBytes sends raw media bytes as an attachment to Chatwoot
+// without changing the conversation status. Used for in-memory media like QR codes.
+func (s *Whatsmiau) NotifySGPMediaBytes(ctx context.Context, instanceID, toPhone string, data []byte, mimetype, filename, caption, msgID, msgType string) {
+	instance := s.getInstanceCached(instanceID)
+	if instance == nil || !instance.SGPSyncChatwoot || !hasChatwoot(instance) {
+		return
+	}
+
+	b64 := base64.StdEncoding.EncodeToString(data)
+
+	var msg *WookMessageRaw
+	switch msgType {
+	case "imageMessage":
+		msg = &WookMessageRaw{
+			Base64: b64,
+			ImageMessage: &WookImageMessageRaw{
+				Mimetype: mimetype,
+				Caption:  caption,
+			},
+		}
+	default:
+		msg = &WookMessageRaw{
+			Base64: b64,
+			DocumentMessage: &WookDocumentMessageRaw{
+				Mimetype: mimetype,
+				FileName: filename,
+				Caption:  caption,
+			},
+		}
+	}
+
+	messageData := &WookMessageData{
+		Key: &WookKey{
+			RemoteJid: toPhone + "@s.whatsapp.net",
+			FromMe:    true,
+			Id:        msgID,
+		},
+		Status:           "DELIVERY_ACK",
+		Message:          msg,
+		MessageType:      msgType,
+		MessageTimestamp: int(time.Now().Unix()),
+		InstanceId:       instanceID,
+	}
+
+	go s.handleChatwootMessageKeepStatus(instanceID, instance, messageData)
+}
+
+func (s *Whatsmiau) handleChatwootMessageKeepStatus(id string, instance *models.Instance, messageData *WookMessageData) {
+	if messageData == nil || messageData.Key == nil {
+		return
+	}
 	svc := NewChatwootService(ChatwootConfig{
 		URL:       instance.ChatwootURL,
 		AccountID: instance.ChatwootAccountID,
 		Token:     instance.ChatwootToken,
 	})
-	svc.HandleMessageEdit(id, messageID, newText)
+
+	opts := HandleMessageOptions{KeepStatus: true}
+
+	if client, ok := s.clients.Load(id); ok && client != nil {
+		if client.Store.ID != nil {
+			opts.InstanceJID = client.Store.ID.String()
+		}
+	}
+
+	svc.HandleMessage(id, messageData, opts)
+}
+
+// chatwootOutgoingKey retorna a chave Redis para o mapeamento chatwootMsgID → WAID.
+func chatwootOutgoingKey(chatwootMsgID int) string {
+	return fmt.Sprintf("chatwoot:outgoing:%d", chatwootMsgID)
+}
+
+// UpdateChatwootMessageSourceID salva o WAID no Redis (TTL = 60h) e tenta persistir
+// no banco do Chatwoot via SQL direto. O Redis é a fonte primária para editar/apagar.
+func (s *Whatsmiau) UpdateChatwootMessageSourceID(instance *models.Instance, chatwootMsgID int, waMessageID string) {
+	if instance == nil || !hasChatwoot(instance) {
+		return
+	}
+	sourceID := fmt.Sprintf("WAID:%s", waMessageID)
+
+	// Persiste no Redis com TTL de 60h — expira automaticamente junto com o prazo do WhatsApp.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.redis.Set(ctx, chatwootOutgoingKey(chatwootMsgID), sourceID, WhatsAppRevokeTTL).Err(); err != nil {
+		zap.L().Warn("chatwoot: erro ao salvar source_id no Redis",
+			zap.Int("chatwootMsgID", chatwootMsgID),
+			zap.String("sourceID", sourceID),
+			zap.Error(err))
+	}
+
+	// Tenta também atualizar direto no banco do Chatwoot (se configurado).
+	svc := NewChatwootService(ChatwootConfig{
+		URL:       instance.ChatwootURL,
+		AccountID: instance.ChatwootAccountID,
+		Token:     instance.ChatwootToken,
+	})
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel2()
+	if err := svc.UpdateMessageSourceID(ctx2, chatwootMsgID, sourceID); err != nil {
+		zap.L().Warn("chatwoot: source_id salvo apenas no Redis (banco indisponível)",
+			zap.Int("chatwootMsgID", chatwootMsgID),
+			zap.String("sourceID", sourceID),
+			zap.Error(err))
+	} else {
+		zap.L().Info("chatwoot: 🔗 source_id atualizado",
+			zap.Int("chatwootMsgID", chatwootMsgID),
+			zap.String("sourceID", sourceID))
+	}
+}
+
+// GetChatwootOutgoingWAID retorna o WAID de uma mensagem outgoing pelo ID do Chatwoot.
+// Retorna ("", false) se a chave não existir (expirou os 60h ou nunca foi salva).
+func (s *Whatsmiau) GetChatwootOutgoingWAID(chatwootMsgID int) (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	val, err := s.redis.Get(ctx, chatwootOutgoingKey(chatwootMsgID)).Result()
+	if err == goredis.Nil || err != nil {
+		return "", false
+	}
+	return val, true
+}
+
+func (s *Whatsmiau) handleChatwootDelete(id string, instance *models.Instance, messageID, chatJID string) {
+	// Marca que ESTE messageID foi revogado pelo WhatsApp (não pelo operador no Chatwoot).
+	// O webhook de message_deleted que o Chatwoot vai disparar após deletarmos via API
+	// deve ignorar — a exclusão já aconteceu no WhatsApp.
+	ctx := context.Background()
+	markerKey := fmt.Sprintf("chatwoot:wa_revoked:%s", messageID)
+	s.redis.Set(ctx, markerKey, "1", 90*time.Second)
+
+	svc := NewChatwootService(ChatwootConfig{
+		URL:       instance.ChatwootURL,
+		AccountID: instance.ChatwootAccountID,
+		Token:     instance.ChatwootToken,
+	})
+	svc.HandleMessageDelete(id, messageID, chatJID)
+}
+
+// IsWARevokedMessage retorna true se o messageID foi revogado pelo WhatsApp
+// (e não pelo operador via Chatwoot UI). Usado para evitar loop de deleção.
+func (s *Whatsmiau) IsWARevokedMessage(waMessageID string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	key := fmt.Sprintf("chatwoot:wa_revoked:%s", waMessageID)
+	err := s.redis.Get(ctx, key).Err()
+	return err == nil
+}
+
+// PostChatwootPrivateNote posta uma nota privada em uma conversa do Chatwoot.
+func (s *Whatsmiau) PostChatwootPrivateNote(instance *models.Instance, conversationID int, content string) {
+	if instance == nil || !hasChatwoot(instance) {
+		return
+	}
+	svc := NewChatwootService(ChatwootConfig{
+		URL:       instance.ChatwootURL,
+		AccountID: instance.ChatwootAccountID,
+		Token:     instance.ChatwootToken,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := svc.PostPrivateNote(ctx, conversationID, content); err != nil {
+		zap.L().Warn("chatwoot: erro ao postar nota privada",
+			zap.Int("conversationID", conversationID),
+			zap.Error(err))
+	}
+}
+
+func (s *Whatsmiau) handleChatwootEdit(id string, instance *models.Instance, messageID, newText string, fromMe bool, chatJID string) {
+	svc := NewChatwootService(ChatwootConfig{
+		URL:       instance.ChatwootURL,
+		AccountID: instance.ChatwootAccountID,
+		Token:     instance.ChatwootToken,
+	})
+	svc.HandleMessageEdit(id, messageID, newText, fromMe, chatJID)
+}
+
+// handleConnectedEvent é chamado quando a conexão com o WhatsApp é estabelecida.
+// Se alwaysOnline estiver habilitado, envia presença disponível.
+func (s *Whatsmiau) handleConnectedEvent(id string, instance *models.Instance) {
+	if !instance.AlwaysOnline {
+		return
+	}
+	client, ok := s.clients.Load(id)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := client.SendPresence(ctx, types.PresenceAvailable); err != nil {
+		zap.L().Warn("alwaysOnline: erro ao enviar presença disponível", zap.String("instance", id), zap.Error(err))
+	} else {
+		zap.L().Info("alwaysOnline: ✅ presença disponível enviada", zap.String("instance", id))
+	}
+}
+
+// handleCallOffer rejeita ligações recebidas se rejectCall estiver habilitado
+// e envia a mensagem msgCall configurada (se houver).
+// Também notifica o Chatwoot sobre a tentativa de ligação.
+func (s *Whatsmiau) handleCallOffer(id string, instance *models.Instance, meta types.BasicCallMeta) {
+	// Notifica Chatwoot independente de rejeitar ou não
+	if hasChatwoot(instance) {
+		go func() {
+			ctx := context.Background()
+
+			// Resolve LID → JID de telefone real.
+			// meta.From pode ser um LID (ex: 222724236542150@lid) em vez de um JID normal.
+			// extractJidLid converte para o JID de telefone usando a store local.
+			callerJIDStr, _ := s.extractJidLid(ctx, id, meta.From)
+
+			// callerJIDStr pode ser "5511987654321@s.whatsapp.net" ou ainda o LID se não resolvido.
+			// Garantimos o formato correto para o HandleMessage.
+			remoteJid := callerJIDStr
+			if !strings.Contains(remoteJid, "@") {
+				remoteJid = remoteJid + "@s.whatsapp.net"
+			} else if strings.Contains(remoteJid, "@lid") {
+				// Não foi possível resolver o LID — não adianta criar contato errado
+				zap.L().Warn("chatwoot: 📵 ligação de LID não resolvido, ignorando notificação",
+					zap.String("instance", id),
+					zap.String("from", meta.From.String()))
+				return
+			}
+
+			zap.L().Info("chatwoot: 📵 ligação recebida",
+				zap.String("instance", id),
+				zap.String("from", meta.From.String()),
+				zap.String("resolvedJid", remoteJid))
+
+			msgID := fmt.Sprintf("call-%s", meta.CallID)
+			callText := "📵 *Tentativa de ligação via WhatsApp*\n_(o cliente tentou iniciar uma chamada de voz ou vídeo)_"
+			svc := NewChatwootService(ChatwootConfig{
+				URL:       instance.ChatwootURL,
+				AccountID: instance.ChatwootAccountID,
+				Token:     instance.ChatwootToken,
+			})
+
+			pushName := ""
+			opts := HandleMessageOptions{}
+			if client, ok := s.clients.Load(id); ok && client != nil {
+				if client.Store.ID != nil {
+					opts.InstanceJID = client.Store.ID.String()
+				}
+				// Tenta obter nome do contato (usa o JID resolvido se possível)
+				resolvedJID := meta.From
+				if pn, err := types.ParseJID(remoteJid); err == nil {
+					resolvedJID = pn
+				}
+				if info, err := client.Store.Contacts.GetContact(ctx, resolvedJID); err == nil {
+					if info.PushName != "" {
+						pushName = info.PushName
+					} else if info.BusinessName != "" {
+						pushName = info.BusinessName
+					}
+				}
+				if url, _, err := s.getPic(id, resolvedJID); err == nil {
+					opts.ProfilePicURL = url
+				}
+			}
+
+			messageData := &WookMessageData{
+				Key: &WookKey{
+					RemoteJid: remoteJid,
+					FromMe:    false,
+					Id:        msgID,
+				},
+				PushName:         pushName,
+				Status:           "DELIVERY_ACK",
+				Message:          &WookMessageRaw{Conversation: callText},
+				MessageType:      "conversation",
+				MessageTimestamp: int(time.Now().Unix()),
+				InstanceId:       id,
+			}
+			svc.HandleMessage(id, messageData, opts)
+		}()
+	}
+
+	if !instance.RejectCall {
+		return
+	}
+	client, ok := s.clients.Load(id)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := client.RejectCall(ctx, meta.From, meta.CallID); err != nil {
+		zap.L().Warn("rejectCall: erro ao rejeitar ligação",
+			zap.String("instance", id),
+			zap.String("from", meta.From.String()),
+			zap.Error(err))
+	} else {
+		zap.L().Info("rejectCall: 📵 ligação rejeitada",
+			zap.String("instance", id),
+			zap.String("from", meta.From.String()))
+	}
+
+	if instance.MsgCall == "" {
+		return
+	}
+
+	// Envia mensagem configurada após rejeitar
+	msgCtx, msgCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer msgCancel()
+	if _, err := s.SendText(msgCtx, &SendText{
+		InstanceID: id,
+		RemoteJID:  &meta.From,
+		Text:       instance.MsgCall,
+	}); err != nil {
+		zap.L().Warn("rejectCall: erro ao enviar msgCall",
+			zap.String("instance", id),
+			zap.String("from", meta.From.String()),
+			zap.Error(err))
+	}
 }

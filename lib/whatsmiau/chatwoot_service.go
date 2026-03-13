@@ -226,6 +226,17 @@ type chatwootConversationCreateResponse struct {
 	ID int `json:"id"`
 }
 
+type chatwootMessageItem struct {
+	ID          int    `json:"id"`
+	SourceID    string `json:"source_id"`
+	Content     string `json:"content"`
+	MessageType int    `json:"message_type"` // 0=incoming, 1=outgoing
+}
+
+type chatwootMessagesResponse struct {
+	Payload []chatwootMessageItem `json:"payload"`
+}
+
 type chatwootInbox struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`
@@ -451,6 +462,9 @@ type HandleMessageOptions struct {
 	// GroupName é o nome real do grupo (obtido via client.GetGroupInfo).
 	// Se vazio, usa o ID numérico do grupo como nome.
 	GroupName string
+	// KeepStatus=true: não muda o status da conversa (para mensagens automáticas como SGP).
+	// Conversas resolvidas NÃO são reabertas; novas conversas são criadas como "pending".
+	KeepStatus bool
 }
 
 // HandleMessage processa uma mensagem e envia ao Chatwoot.
@@ -534,8 +548,13 @@ func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMess
 			contactName = fmt.Sprintf("Grupo %s", groupID)
 		}
 	} else if isFromMe {
-		// fromMe=true: pushName é do operador — usa número como nome do cliente
-		contactName = phone
+		// fromMe=true: pushName é do operador.
+		// Usa o nome do destinatário buscado do store (ContactName), ou cai no número.
+		if messageData.ContactName != "" {
+			contactName = messageData.ContactName
+		} else {
+			contactName = phone
+		}
 	} else if contactName == "" {
 		contactName = phone
 	}
@@ -578,7 +597,7 @@ func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMess
 
 	zap.L().Info("chatwoot: ✅ contato obtido", zap.Int("contactId", contactID))
 
-	conversationID, err := c.findOrCreateConversation(ctx, contactID, inboxID, isFromMe)
+	conversationID, err := c.findOrCreateConversation(ctx, contactID, inboxID, isFromMe, opts.KeepStatus)
 	if err != nil {
 		zap.L().Error("chatwoot: erro ao buscar/criar conversa", zap.Error(err))
 		return
@@ -663,9 +682,14 @@ func (c *ChatwootService) HandleMessage(instanceID string, messageData *WookMess
 
 	messageText := extractMessageText(messageData)
 	if messageText == "" {
-		zap.L().Warn("chatwoot: mensagem sem conteúdo, ignorando",
+		// Tipos não mapeados: envia placeholder para o agente saber que houve interação
+		msgType := messageData.MessageType
+		if msgType == "" || msgType == "unknown" {
+			msgType = "mensagem desconhecida"
+		}
+		messageText = fmt.Sprintf("⚠️ *Tipo de mensagem não suportado:* _%s_\n_(o cliente enviou uma mensagem que não pode ser exibida aqui)_", msgType)
+		zap.L().Warn("chatwoot: mensagem sem conteúdo mapeado, enviando placeholder",
 			zap.String("type", messageData.MessageType))
-		return
 	}
 
 	// Adiciona prefixo de grupo ao texto
@@ -1036,7 +1060,7 @@ func (c *ChatwootService) addLabelToContact(ctx context.Context, contactID int) 
 
 // ── Conversas ─────────────────────────────────────────────────────────────────
 
-func (c *ChatwootService) findOrCreateConversation(ctx context.Context, contactID, inboxID int, isFromMe bool) (int, error) {
+func (c *ChatwootService) findOrCreateConversation(ctx context.Context, contactID, inboxID int, isFromMe bool, keepStatus bool) (int, error) {
 	if contactID <= 0 {
 		return 0, fmt.Errorf("contactID inválido: %d", contactID)
 	}
@@ -1050,7 +1074,7 @@ func (c *ChatwootService) findOrCreateConversation(ctx context.Context, contactI
 	zap.L().Info("chatwoot: 🔒 lock conversa",
 		zap.String("key", lockKey))
 
-	id, err := c.findOrReopenConversation(ctx, contactID, inboxID)
+	id, err := c.findOrReopenConversation(ctx, contactID, inboxID, keepStatus)
 	if err != nil {
 		return 0, err
 	}
@@ -1062,10 +1086,10 @@ func (c *ChatwootService) findOrCreateConversation(ctx context.Context, contactI
 	zap.L().Info("chatwoot: 📝 criando nova conversa",
 		zap.Int("contactId", contactID))
 
-	return c.createConversation(ctx, contactID, inboxID, isFromMe)
+	return c.createConversation(ctx, contactID, inboxID, isFromMe, keepStatus)
 }
 
-func (c *ChatwootService) findOrReopenConversation(ctx context.Context, contactID, inboxID int) (int, error) {
+func (c *ChatwootService) findOrReopenConversation(ctx context.Context, contactID, inboxID int, keepStatus bool) (int, error) {
 	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/%d/conversations",
 		c.config.URL, c.config.AccountID, contactID)
 
@@ -1093,7 +1117,7 @@ func (c *ChatwootService) findOrReopenConversation(ctx context.Context, contactI
 			zap.Int("conversationId", conv.ID),
 			zap.String("status", conv.Status))
 
-		if conv.Status == "resolved" {
+		if conv.Status == "resolved" && !keepStatus {
 			zap.L().Info("chatwoot: ♻️ reabrindo conversa resolvida",
 				zap.Int("conversationId", conv.ID))
 
@@ -1135,7 +1159,7 @@ func (c *ChatwootService) reopenConversation(ctx context.Context, conversationID
 	return nil
 }
 
-func (c *ChatwootService) createConversation(ctx context.Context, contactID, inboxID int, isFromMe bool) (int, error) {
+func (c *ChatwootService) createConversation(ctx context.Context, contactID, inboxID int, isFromMe bool, keepStatus bool) (int, error) {
 	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations",
 		c.config.URL,
 		c.config.AccountID)
@@ -1147,7 +1171,7 @@ func (c *ChatwootService) createConversation(ctx context.Context, contactID, inb
 
 	// Quando a mensagem parte do operador (fromMe), força status "open" imediatamente
 	// para que a conversa apareça no Chatwoot sem precisar aguardar resposta do cliente.
-	if isFromMe {
+	if isFromMe && !keepStatus {
 		body["status"] = "open"
 	}
 
@@ -1221,10 +1245,9 @@ func (c *ChatwootService) sendMessage(ctx context.Context, conversationID int, c
 	return nil
 }
 
-// sendReactionAsReply envia uma reaction do WhatsApp como mensagem de emoji no Chatwoot.
-// A API do Chatwoot não expõe campos de reply (in_reply_to) no endpoint de criação de mensagem,
-// portanto o emoji é enviado como mensagem de texto simples na conversa.
-func (c *ChatwootService) sendReactionAsReply(ctx context.Context, conversationID int, emoji, _, reactionMsgID string, isFromMe bool) error {
+// sendReactionAsReply envia uma reaction do WhatsApp como nova mensagem no Chatwoot,
+// referenciando a mensagem original via content_attributes.in_reply_to quando possível.
+func (c *ChatwootService) sendReactionAsReply(ctx context.Context, conversationID int, emoji, originalMsgID, reactionMsgID string, isFromMe bool) error {
 	sourceID := fmt.Sprintf("WAID:%s", reactionMsgID)
 
 	messageType := "incoming"
@@ -1239,15 +1262,25 @@ func (c *ChatwootService) sendReactionAsReply(ctx context.Context, conversationI
 		return nil
 	}
 
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
-		c.config.URL, c.config.AccountID, conversationID)
-
 	body := map[string]interface{}{
 		"content":      emoji,
 		"message_type": messageType,
 		"private":      false,
 		"source_id":    sourceID,
 	}
+
+	// Tenta encontrar o ID interno da mensagem original para referenciar
+	if originalMsgID != "" {
+		originalSourceID := fmt.Sprintf("WAID:%s", originalMsgID)
+		if origChatwootID, err := c.findMessageIDInConversation(ctx, conversationID, originalSourceID); err == nil && origChatwootID > 0 {
+			body["content_attributes"] = map[string]interface{}{
+				"in_reply_to": origChatwootID,
+			}
+		}
+	}
+
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
+		c.config.URL, c.config.AccountID, conversationID)
 
 	resp, err := c.doRequest(ctx, "POST", url, body)
 	if err != nil {
@@ -1257,10 +1290,10 @@ func (c *ChatwootService) sendReactionAsReply(ctx context.Context, conversationI
 
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("chatwoot erro %d: %s", resp.StatusCode, string(raw))
+		return fmt.Errorf("chatwoot reaction erro %d: %s", resp.StatusCode, string(raw))
 	}
 
-	zap.L().Info("chatwoot: ✅ reaction enviada como emoji",
+	zap.L().Info("chatwoot: ✅ reaction enviada como mensagem",
 		zap.String("emoji", emoji),
 		zap.Int("conversationId", conversationID))
 
@@ -1538,10 +1571,71 @@ func extractMessageText(data *WookMessageData) string {
 	if msg.ReactionMessage != nil {
 		return fmt.Sprintf("[Reação: %s]", msg.ReactionMessage.Text)
 	}
+	if msg.ListResponseMessage != nil {
+		selected := ""
+		if msg.ListResponseMessage.SingleSelectReply != nil {
+			selected = msg.ListResponseMessage.SingleSelectReply.SelectedRowId
+		}
+		if selected != "" {
+			return fmt.Sprintf("📋 *Resposta de lista:* %s", selected)
+		}
+		return "📋 *Resposta de lista*"
+	}
+	if msg.AudioMessage != nil {
+		return "🎵 *Áudio*"
+	}
+	if msg.VideoMessage != nil {
+		caption := msg.VideoMessage.Caption
+		if caption != "" {
+			return fmt.Sprintf("🎥 *Vídeo:* %s", caption)
+		}
+		return "🎥 *Vídeo*"
+	}
 
 	return ""
 }
-func (c *ChatwootService) HandleMessageDelete(instanceID, messageID string) {
+// resolveMessage finds (msgID, convID) for a WhatsApp messageID.
+// When phone is available (chatJID resolved from LID), uses API-first to get correct convID,
+// then looks up msgID via DB (scoped to convID) or API fallback.
+// Falls back to global DB lookup only when no phone is available.
+func (c *ChatwootService) resolveMessage(ctx context.Context, sourceID, chatJID string, inboxID int) (msgID, convID int, err error) {
+	phone := extractPhone(chatJID)
+
+	if phone != "" {
+		// API-first: get the correct conversation ID via phone number
+		convID, err = c.findConversationIDByPhone(ctx, phone, inboxID)
+		if err != nil || convID <= 0 {
+			return 0, 0, fmt.Errorf("conversa não encontrada para phone %s: %w", phone, err)
+		}
+
+		// Try DB scoped to the correct convID
+		if c.db != nil {
+			row := c.db.QueryRowContext(ctx,
+				`SELECT id FROM messages WHERE source_id = $1 AND conversation_id = $2 ORDER BY id DESC LIMIT 1`,
+				sourceID, convID)
+			if scanErr := row.Scan(&msgID); scanErr == nil && msgID > 0 {
+				return msgID, convID, nil
+			}
+		}
+
+		// DB miss: fall back to API message list
+		msgID, err = c.findMessageIDInConversation(ctx, convID, sourceID)
+		if err != nil || msgID <= 0 {
+			return 0, convID, fmt.Errorf("mensagem não encontrada na conversa %d: %w", convID, err)
+		}
+		return msgID, convID, nil
+	}
+
+	// No phone available: fall back to global DB lookup
+	msgID, convID, err = c.findMessageBySourceID(ctx, sourceID, inboxID)
+	if err == nil && msgID > 0 && convID > 0 {
+		return
+	}
+
+	return 0, 0, fmt.Errorf("JID inválido e mensagem não encontrada no DB: %s", chatJID)
+}
+
+func (c *ChatwootService) HandleMessageDelete(instanceID, messageID, chatJID string) {
 	if !c.IsEnabled() {
 		return
 	}
@@ -1556,31 +1650,91 @@ func (c *ChatwootService) HandleMessageDelete(instanceID, messageID string) {
 	}
 
 	sourceID := fmt.Sprintf("WAID:%s", messageID)
-	msgID, convID, err := c.findMessageBySourceID(ctx, sourceID, inboxID)
-	if err != nil || msgID <= 0 {
-		zap.L().Warn("chatwoot: delete - mensagem não encontrada no Chatwoot",
-			zap.String("sourceId", sourceID))
+	zap.L().Info("chatwoot: 🔍 delete - buscando mensagem",
+		zap.String("sourceId", sourceID),
+		zap.String("chatJID", chatJID),
+		zap.Int("inboxID", inboxID))
+	msgID, convID, err := c.resolveMessage(ctx, sourceID, chatJID, inboxID)
+	zap.L().Info("chatwoot: 🔍 delete - resultado resolveMessage",
+		zap.Int("msgID", msgID),
+		zap.Int("convID", convID),
+		zap.NamedError("err", err))
+	if err != nil || msgID <= 0 || convID <= 0 {
+		zap.L().Warn("chatwoot: delete - mensagem não encontrada",
+			zap.String("sourceId", sourceID),
+			zap.String("chatJID", chatJID),
+			zap.NamedError("reason", err))
 		return
 	}
 
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages/%d",
-		c.config.URL, c.config.AccountID, convID, msgID)
+	// Fetch original message content before deleting
+	originalContent, originalMsgType, err := c.getMessageByID(ctx, convID, msgID)
+	if err != nil {
+		zap.L().Warn("chatwoot: delete - não foi possível obter conteúdo original",
+			zap.Int("messageId", msgID), zap.Error(err))
+	}
 
-	resp, err := c.doRequest(ctx, "PATCH", url, map[string]interface{}{
-		"content": "🚫 _Esta mensagem foi apagada_",
+	// DELETE original message
+	deleteURL := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages/%d",
+		c.config.URL, c.config.AccountID, convID, msgID)
+	delResp, err := c.doRequest(ctx, "DELETE", deleteURL, nil)
+	if err != nil {
+		zap.L().Error("chatwoot: erro ao deletar mensagem", zap.Error(err))
+		return
+	}
+	defer delResp.Body.Close()
+
+	if delResp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(delResp.Body)
+		zap.L().Error("chatwoot: delete - Chatwoot retornou erro",
+			zap.Int("statusCode", delResp.StatusCode),
+			zap.String("body", string(raw)),
+			zap.String("sourceId", sourceID),
+			zap.Int("conversationId", convID))
+		return
+	}
+
+	// Post "APAGADA:" notification with original content
+	if originalContent == "" {
+		zap.L().Info("chatwoot: 🗑️ mensagem deletada (sem conteúdo para exibir)",
+			zap.String("sourceId", sourceID),
+			zap.Int("messageId", msgID),
+			zap.Int("conversationId", convID))
+		return
+	}
+
+	deletedText := fmt.Sprintf("*APAGADA:*\n\n%s", originalContent)
+	deletedSourceID := fmt.Sprintf("WAID:%s:deleted:%d", messageID, time.Now().UnixMilli())
+	msgURL := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
+		c.config.URL, c.config.AccountID, convID)
+
+	postResp, err := c.doRequest(ctx, "POST", msgURL, map[string]interface{}{
+		"content":      deletedText,
+		"message_type": originalMsgType,
+		"private":      false,
+		"source_id":    deletedSourceID,
 	})
 	if err != nil {
-		zap.L().Error("chatwoot: erro ao marcar mensagem como deletada", zap.Error(err))
+		zap.L().Error("chatwoot: erro ao postar notificação de mensagem apagada", zap.Error(err))
 		return
 	}
-	defer resp.Body.Close()
+	defer postResp.Body.Close()
 
-	zap.L().Info("chatwoot: 🗑️ mensagem marcada como deletada no Chatwoot",
+	if postResp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(postResp.Body)
+		zap.L().Error("chatwoot: delete - erro ao postar notificação",
+			zap.Int("statusCode", postResp.StatusCode),
+			zap.String("body", string(raw)))
+		return
+	}
+
+	zap.L().Info("chatwoot: 🗑️ mensagem apagada notificada no Chatwoot",
 		zap.String("sourceId", sourceID),
 		zap.Int("messageId", msgID),
 		zap.Int("conversationId", convID))
 }
-func (c *ChatwootService) HandleMessageEdit(instanceID, messageID, newText string) {
+
+func (c *ChatwootService) HandleMessageEdit(instanceID, messageID, newText string, fromMe bool, chatJID string) {
 	if !c.IsEnabled() {
 		return
 	}
@@ -1595,63 +1749,202 @@ func (c *ChatwootService) HandleMessageEdit(instanceID, messageID, newText strin
 	}
 
 	sourceID := fmt.Sprintf("WAID:%s", messageID)
-	msgID, convID, err := c.findMessageBySourceID(ctx, sourceID, inboxID)
-	if err != nil || msgID <= 0 {
-		zap.L().Warn("chatwoot: edit - mensagem não encontrada no Chatwoot",
-			zap.String("sourceId", sourceID))
+	origMsgID, convID, err := c.resolveMessage(ctx, sourceID, chatJID, inboxID)
+	if err != nil || convID <= 0 {
+		zap.L().Warn("chatwoot: edit - mensagem/conversa não encontrada",
+			zap.String("sourceId", sourceID),
+			zap.String("chatJID", chatJID),
+			zap.NamedError("reason", err))
 		return
 	}
 
-	// Busca o conteúdo atual para preservar o texto original
-	originalContent := c.getMessageContent(ctx, convID, msgID)
-
-	var editedContent string
-	if originalContent != "" {
-		editedContent = fmt.Sprintf("%s\n\n✏️ _Editado: %s_", originalContent, newText)
-	} else {
-		editedContent = fmt.Sprintf("✏️ _Editado: %s_", newText)
+	// Usa o tipo da mensagem original do Chatwoot (mais confiável que o fromMe do evento WA)
+	messageType := "incoming"
+	if origMsgID > 0 {
+		if _, origType, err2 := c.getMessageByID(ctx, convID, origMsgID); err2 == nil {
+			messageType = origType
+		}
+	} else if fromMe {
+		messageType = "outgoing"
 	}
 
-	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages/%d",
-		c.config.URL, c.config.AccountID, convID, msgID)
+	// Cria nova mensagem na conversa com o texto editado — mesmo comportamento da Evolution API
+	editedText := fmt.Sprintf("\n\n`Editado:`\n\n%s", newText)
+	editSourceID := fmt.Sprintf("WAID:%s:edit:%d", messageID, time.Now().UnixMilli())
 
-	resp, err := c.doRequest(ctx, "PATCH", url, map[string]interface{}{
-		"content": editedContent,
-	})
+	msgURL := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
+		c.config.URL, c.config.AccountID, convID)
+
+	body := map[string]interface{}{
+		"content":      editedText,
+		"message_type": messageType,
+		"private":      false,
+		"source_id":    editSourceID,
+	}
+	if origMsgID > 0 {
+		body["content_attributes"] = map[string]interface{}{
+			"in_reply_to": origMsgID,
+		}
+	}
+
+	resp, err := c.doRequest(ctx, "POST", msgURL, body)
 	if err != nil {
-		zap.L().Error("chatwoot: erro ao editar mensagem", zap.Error(err))
+		zap.L().Error("chatwoot: erro ao enviar mensagem de edição", zap.Error(err))
 		return
 	}
 	defer resp.Body.Close()
 
-	zap.L().Info("chatwoot: ✏️ mensagem editada no Chatwoot",
-		zap.String("sourceId", sourceID),
-		zap.Int("messageId", msgID),
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		zap.L().Error("chatwoot: edit - Chatwoot retornou erro",
+			zap.Int("statusCode", resp.StatusCode),
+			zap.String("body", string(raw)),
+			zap.String("sourceId", editSourceID),
+			zap.Int("conversationId", convID))
+		return
+	}
+
+	zap.L().Info("chatwoot: ✏️ mensagem de edição enviada ao Chatwoot",
+		zap.String("sourceId", editSourceID),
 		zap.Int("conversationId", convID))
 }
 
-// getMessageContent busca o conteúdo atual de uma mensagem via SQL.
-func (c *ChatwootService) getMessageContent(ctx context.Context, convID, msgID int) string {
-	if c.db == nil {
-		return ""
-	}
-	var content string
-	_ = c.db.QueryRowContext(ctx,
-		`SELECT content FROM messages WHERE id = $1 AND conversation_id = $2 LIMIT 1`,
-		msgID, convID,
-	).Scan(&content)
-	return content
-}
 func (c *ChatwootService) findMessageBySourceID(ctx context.Context, sourceID string, _ int) (msgID, convID int, err error) {
 	if c.db == nil {
 		return 0, 0, fmt.Errorf("db não configurado")
 	}
 	row := c.db.QueryRowContext(ctx,
-		`SELECT id, conversation_id FROM messages WHERE source_id = $1 LIMIT 1`,
-		sourceID)
+		`SELECT id, conversation_id FROM messages WHERE source_id = $1 AND account_id = $2 ORDER BY id DESC LIMIT 1`,
+		sourceID, c.config.AccountID)
 	if err := row.Scan(&msgID, &convID); err != nil {
 		return 0, 0, fmt.Errorf("mensagem não encontrada: %s", sourceID)
 	}
 	return msgID, convID, nil
+}
+
+// findConversationIDByPhone uses the Chatwoot REST API to find the conversation ID
+// for a contact (identified by phone) in the given inbox.
+func (c *ChatwootService) findConversationIDByPhone(ctx context.Context, phone string, inboxID int) (int, error) {
+	contactID, err := c.findOrCreateContact(ctx, phone, phone, phone, "")
+	if err != nil || contactID <= 0 {
+		return 0, fmt.Errorf("contato não encontrado para phone %s: %w", phone, err)
+	}
+
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/contacts/%d/conversations",
+		c.config.URL, c.config.AccountID, contactID)
+	resp, err := c.doRequest(ctx, "GET", url, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	var result chatwootConversationsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, err
+	}
+
+	for _, conv := range result.Payload {
+		if conv.InboxID == inboxID {
+			return conv.ID, nil
+		}
+	}
+
+	return 0, fmt.Errorf("conversa não encontrada para phone %s inbox %d", phone, inboxID)
+}
+
+// findMessageIDInConversation lists messages in a Chatwoot conversation and returns
+// the message ID matching the given source_id. Returns 0 if not found.
+func (c *ChatwootService) findMessageIDInConversation(ctx context.Context, convID int, sourceID string) (int, error) {
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
+		c.config.URL, c.config.AccountID, convID)
+	resp, err := c.doRequest(ctx, "GET", url, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	var result chatwootMessagesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, err
+	}
+
+	for _, msg := range result.Payload {
+		if msg.SourceID == sourceID {
+			return msg.ID, nil
+		}
+	}
+
+	return 0, fmt.Errorf("mensagem com sourceId %s não encontrada na conversa %d", sourceID, convID)
+}
+
+// UpdateMessageSourceID sets source_id = waSourceID on a Chatwoot message via direct DB update.
+// This is used after sending a message from Chatwoot to WhatsApp, so future edits/deletes
+// triggered from the phone can be linked back to the Chatwoot message.
+func (c *ChatwootService) UpdateMessageSourceID(ctx context.Context, chatwootMsgID int, waSourceID string) error {
+	if c.db == nil {
+		return fmt.Errorf("db não configurado — não foi possível atualizar source_id do msg %d", chatwootMsgID)
+	}
+	// id é primary key — não precisa filtrar por account_id (evita problema de tipo string vs int)
+	result, err := c.db.ExecContext(ctx,
+		`UPDATE messages SET source_id = $1 WHERE id = $2`,
+		waSourceID, chatwootMsgID)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("nenhuma linha atualizada para msg %d — ID não existe no DB", chatwootMsgID)
+	}
+	return nil
+}
+
+// getMessageByID returns content and message_type string for a given Chatwoot message ID.
+func (c *ChatwootService) getMessageByID(ctx context.Context, convID, msgID int) (content, messageType string, err error) {
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
+		c.config.URL, c.config.AccountID, convID)
+	resp, err := c.doRequest(ctx, "GET", url, nil)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+
+	var result chatwootMessagesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", "", err
+	}
+
+	for _, msg := range result.Payload {
+		if msg.ID == msgID {
+			msgType := "incoming"
+			if msg.MessageType == 1 {
+				msgType = "outgoing"
+			}
+			return msg.Content, msgType, nil
+		}
+	}
+
+	return "", "", fmt.Errorf("mensagem %d não encontrada na conversa %d", msgID, convID)
+}
+
+// PostPrivateNote posta uma nota privada (visível só para os agentes) em uma conversa do Chatwoot.
+func (c *ChatwootService) PostPrivateNote(ctx context.Context, conversationID int, content string) error {
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages",
+		c.config.URL, c.config.AccountID, conversationID)
+
+	resp, err := c.doRequest(ctx, "POST", url, map[string]interface{}{
+		"content":      content,
+		"message_type": "outgoing",
+		"private":      true,
+	})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("chatwoot erro %d: %s", resp.StatusCode, string(raw))
+	}
+	return nil
 }
 

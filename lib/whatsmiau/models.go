@@ -28,6 +28,7 @@ type WookEvent[data any] struct {
 type WookMessageData struct {
 	Key              *WookKey                `json:"key,omitempty"`
 	PushName         string                  `json:"pushName,omitempty"`
+	ContactName      string                  `json:"contactName,omitempty"` // nome do destinatário quando fromMe=true
 	Status           string                  `json:"status,omitempty"`
 	Message          *WookMessageRaw         `json:"message,omitempty"`
 	ContextInfo      *WookMessageContextInfo `json:"contextInfo,omitempty"`

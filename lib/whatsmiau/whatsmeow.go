@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/puzpuzpuz/xsync/v4"
 	"github.com/verbeux-ai/whatsmiau/env"
 	"github.com/verbeux-ai/whatsmiau/interfaces"
@@ -21,6 +22,9 @@ import (
 	"golang.org/x/net/context"
 )
 
+// WhatsAppRevokeTTL é o prazo máximo do WhatsApp para apagar mensagens para todos (60 horas).
+const WhatsAppRevokeTTL = 60 * time.Hour
+
 type Whatsmiau struct {
 	clients          *xsync.Map[string, *whatsmeow.Client]
 	container        *sqlstore.Container
@@ -34,6 +38,7 @@ type Whatsmiau struct {
 	httpClient       *http.Client
 	fileStorage      interfaces.Storage
 	handlerSemaphore chan struct{}
+	redis            *redis.Client
 }
 
 var instance *Whatsmiau
@@ -43,6 +48,11 @@ func Get() *Whatsmiau {
 	mu.Lock()
 	defer mu.Unlock()
 	return instance
+}
+
+// Client exposes the underlying whatsmeow.Client for a given instanceID.
+func (s *Whatsmiau) Client(instanceID string) (*whatsmeow.Client, bool) {
+	return s.clients.Load(instanceID)
 }
 
 func LoadMiau(ctx context.Context, container *sqlstore.Container) {
@@ -112,20 +122,21 @@ func LoadMiau(ctx context.Context, container *sqlstore.Container) {
 	}
 
 	instance = &Whatsmiau{
-		clients:         clients,
-		container:       container,
-		logger:          clientLog,
-		repo:            repo,
-		qrCache:         xsync.NewMap[string, string](),
-		instanceCache:   xsync.NewMap[string, models.Instance](),
-		observerRunning: xsync.NewMap[string, bool](),
-		lockConnection:  xsync.NewMap[string, *sync.Mutex](),
-		emitter:         make(chan emitter, env.Env.EmitterBufferSize),
+		clients:          clients,
+		container:        container,
+		logger:           clientLog,
+		repo:             repo,
+		qrCache:          xsync.NewMap[string, string](),
+		instanceCache:    xsync.NewMap[string, models.Instance](),
+		observerRunning:  xsync.NewMap[string, bool](),
+		lockConnection:   xsync.NewMap[string, *sync.Mutex](),
+		emitter:          make(chan emitter, env.Env.EmitterBufferSize),
 		httpClient: &http.Client{
 			Timeout: time.Second * 30, // TODO: load from env
 		},
 		fileStorage:      storage,
 		handlerSemaphore: make(chan struct{}, env.Env.HandlerSemaphoreSize),
+		redis:            services.Redis(),
 	}
 
 	go instance.startEmitter()
@@ -377,6 +388,17 @@ func (s *Whatsmiau) Logout(ctx context.Context, id string) error {
 
 	s.clients.Delete(id)
 	return s.deleteDeviceIfExists(ctx, client)
+}
+
+func (s *Whatsmiau) Restart(id string) error {
+	client, ok := s.clients.Load(id)
+	if !ok {
+		zap.L().Warn("restart: client not loaded", zap.String("id", id))
+		return nil
+	}
+	client.Disconnect()
+	time.Sleep(500 * time.Millisecond)
+	return client.Connect()
 }
 
 func (s *Whatsmiau) Disconnect(id string) error {

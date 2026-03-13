@@ -37,7 +37,7 @@ func (s *Message) SendText(ctx echo.Context) error {
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
 	}
 
-	jid, err := numberToJid(request.Number)
+	jid, err := s.whatsmiau.ResolveJID(ctx.Request().Context(), request.InstanceID, request.Number)
 	if err != nil {
 		zap.L().Error("error converting number to jid", zap.Error(err))
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid number format")
@@ -97,7 +97,7 @@ func (s *Message) SendAudio(ctx echo.Context) error {
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
 	}
 
-	jid, err := numberToJid(request.Number)
+	jid, err := s.whatsmiau.ResolveJID(ctx.Request().Context(), request.InstanceID, request.Number)
 	if err != nil {
 		zap.L().Error("error converting number to jid", zap.Error(err))
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid number format")
@@ -178,7 +178,7 @@ func (s *Message) SendDocument(ctx echo.Context) error {
 }
 
 func (s *Message) sendDocument(ctx echo.Context, request dto.SendDocumentRequest) error {
-	jid, err := numberToJid(request.Number)
+	jid, err := s.whatsmiau.ResolveJID(ctx.Request().Context(), request.InstanceID, request.Number)
 	if err != nil {
 		zap.L().Error("error converting number to jid", zap.Error(err))
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid number format")
@@ -229,7 +229,7 @@ func (s *Message) SendImage(ctx echo.Context) error {
 }
 
 func (s *Message) sendImage(ctx echo.Context, request dto.SendDocumentRequest) error {
-	jid, err := numberToJid(request.Number)
+	jid, err := s.whatsmiau.ResolveJID(ctx.Request().Context(), request.InstanceID, request.Number)
 	if err != nil {
 		zap.L().Error("error converting number to jid", zap.Error(err))
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid number format")
@@ -275,7 +275,7 @@ func (s *Message) SendReaction(ctx echo.Context) error {
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
 	}
 
-	jid, err := numberToJid(request.Key.RemoteJid)
+	jid, err := s.whatsmiau.ResolveJID(ctx.Request().Context(), request.InstanceID, request.Key.RemoteJid)
 	if err != nil {
 		zap.L().Error("error converting number to jid", zap.Error(err))
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid number format")
@@ -326,7 +326,7 @@ func (s *Message) SendButtons(ctx echo.Context) error {
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
 	}
 
-	jid, err := numberToJid(request.Number)
+	jid, err := s.whatsmiau.ResolveJID(ctx.Request().Context(), request.InstanceID, request.Number)
 	if err != nil {
 		zap.L().Error("error converting number to jid", zap.Error(err))
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid number format")

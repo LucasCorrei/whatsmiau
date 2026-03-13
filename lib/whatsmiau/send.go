@@ -298,6 +298,37 @@ func (s *Whatsmiau) SendImage(ctx context.Context, data *SendImageRequest) (*Sen
 	}, nil
 }
 
+// SendImageBytes uploads raw image bytes and sends them to a WhatsApp contact.
+// Used for in-memory generated images (e.g. QR codes) that don't have a URL.
+func (s *Whatsmiau) SendImageBytes(ctx context.Context, instanceID string, remoteJID *types.JID, data []byte, mimetype, caption string) (*SendImageResponse, error) {
+	client, ok := s.clients.Load(instanceID)
+	if !ok {
+		return nil, whatsmeow.ErrClientIsNil
+	}
+
+	uploaded, err := client.Upload(ctx, data, whatsmeow.MediaImage)
+	if err != nil {
+		return nil, err
+	}
+
+	img := &waE2E.ImageMessage{
+		URL:           proto.String(uploaded.URL),
+		Mimetype:      proto.String(mimetype),
+		FileSHA256:    uploaded.FileSHA256,
+		FileLength:    proto.Uint64(uploaded.FileLength),
+		MediaKey:      uploaded.MediaKey,
+		FileEncSHA256: uploaded.FileEncSHA256,
+		DirectPath:    proto.String(uploaded.DirectPath),
+		Caption:       proto.String(caption),
+	}
+
+	resp, err := client.SendMessage(ctx, *remoteJID, &waE2E.Message{ImageMessage: img})
+	if err != nil {
+		return nil, err
+	}
+	return &SendImageResponse{ID: resp.ID, CreatedAt: resp.Timestamp}, nil
+}
+
 type SendReactionRequest struct {
 	InstanceID string     `json:"instance_id"`
 	Reaction   string     `json:"reaction"`
@@ -397,6 +428,57 @@ type SendButtonsRequest struct {
 type SendButtonsResponse struct {
 	ID        string    `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// ── EditMessage ───────────────────────────────────────────────────────────────
+
+type EditMessageRequest struct {
+	InstanceID string
+	RemoteJID  *types.JID
+	MessageID  string
+	NewText    string
+}
+
+type EditMessageResponse struct {
+	ID string
+}
+
+func (s *Whatsmiau) EditMessage(ctx context.Context, data *EditMessageRequest) (*EditMessageResponse, error) {
+	client, ok := s.clients.Load(data.InstanceID)
+	if !ok {
+		return nil, whatsmeow.ErrClientIsNil
+	}
+	newContent := &waE2E.Message{Conversation: proto.String(data.NewText)}
+	editMsg := client.BuildEdit(*data.RemoteJID, types.MessageID(data.MessageID), newContent)
+	resp, err := client.SendMessage(ctx, *data.RemoteJID, editMsg)
+	if err != nil {
+		return nil, err
+	}
+	return &EditMessageResponse{ID: resp.ID}, nil
+}
+
+// ── RevokeMessage ─────────────────────────────────────────────────────────────
+
+type RevokeMessageRequest struct {
+	InstanceID string
+	RemoteJID  *types.JID
+	MessageID  string
+}
+
+type RevokeMessageResponse struct {
+	ID string
+}
+
+func (s *Whatsmiau) RevokeMessage(ctx context.Context, data *RevokeMessageRequest) (*RevokeMessageResponse, error) {
+	client, ok := s.clients.Load(data.InstanceID)
+	if !ok {
+		return nil, whatsmeow.ErrClientIsNil
+	}
+	resp, err := client.RevokeMessage(ctx, *data.RemoteJID, types.MessageID(data.MessageID))
+	if err != nil {
+		return nil, err
+	}
+	return &RevokeMessageResponse{ID: resp.ID}, nil
 }
 
 // allReply retorna true se todos os botões são do tipo "reply"

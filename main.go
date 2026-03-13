@@ -8,8 +8,10 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/verbeux-ai/whatsmiau/env"
 	log_connect "github.com/verbeux-ai/whatsmiau/lib/log-connect"
+	"github.com/verbeux-ai/whatsmiau/lib/sgp"
 	"github.com/verbeux-ai/whatsmiau/lib/whatsmiau"
 	"github.com/verbeux-ai/whatsmiau/server/routes"
+	"github.com/verbeux-ai/whatsmiau/server/ui"
 	"github.com/verbeux-ai/whatsmiau/services"
 	"go.uber.org/zap"
 	"golang.org/x/net/context"
@@ -28,6 +30,7 @@ func main() {
 	ctx, c := context.WithTimeout(context.Background(), 10*time.Second)
 	defer c()
 	whatsmiau.LoadMiau(ctx, services.SQLStore())
+	sgp.Init(whatsmiau.Get(), services.Redis())
 
 	app := echo.New()
 	app.Pre(middleware.Recover())
@@ -35,6 +38,7 @@ func main() {
 	app.Pre(middleware.CORS())
 
 	routes.Load(app)
+	ui.Register(app)
 
 	port := ":" + env.Env.Port
 	zap.L().Info("starting server...", zap.String("port", port))

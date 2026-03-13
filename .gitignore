@@ -1,4 +1,41 @@
-.idea
+# IDE
+.idea/
+.vscode/
+
+# Env / secrets
 .env
-*.json
+.env.local
+.env.production
+.env.*
+!.env.example
+
+# Docker compose personalizado (use docker-compose.example.yml como base)
+docker-compose.yml
+!docker-compose.example.yml
+
+# Build / binaries
+/whatsmiau
+*.exe
+
+# Banco de dados local
 *.db
+*.sqlite
+*.sqlite3
+
+# Credenciais e chaves
+*.json
+*.pem
+*.key
+*.p12
+
+# Dados persistidos pelo whatsmeow / app
+data/
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
+
+# Go test cache
+coverage.out

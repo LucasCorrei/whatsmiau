@@ -4,6 +4,7 @@ import "github.com/verbeux-ai/whatsmiau/models"
 
 type CreateInstanceRequest struct {
 	InstanceName string `json:"instanceName" validate:"required"`
+	Name         string `json:"name,omitempty"`
 
 	Integration string `json:"integration,omitempty"`
 	Token       string `json:"token,omitempty"`
@@ -17,6 +18,10 @@ type CreateInstanceRequest struct {
 	ReadMessages    bool   `json:"readMessages,omitempty"`
 	ReadStatus      bool   `json:"readStatus,omitempty"`
 	SyncFullHistory bool   `json:"syncFullHistory,omitempty"`
+	SGPEnabled      bool   `json:"sgpEnabled,omitempty"`
+	SGPToken        string `json:"sgpToken,omitempty"`
+	SGPAllowedIPs   string `json:"sgpAllowedIPs,omitempty"`
+	SGPSyncChatwoot bool   `json:"sgpSyncChatwoot,omitempty"`
 
 	Webhook *models.InstanceWebhook `json:"webhook,omitempty"`
 
@@ -48,7 +53,20 @@ type CreateInstanceResponse struct {
 }
 
 type UpdateInstanceRequest struct {
-	ID string `param:"id" validate:"required"`
+	ID   string  `param:"id" validate:"required"`
+	Name *string `json:"name,omitempty"`
+
+	RejectCall      *bool   `json:"rejectCall,omitempty"`
+	MsgCall         *string `json:"msgCall,omitempty"`
+	GroupsIgnore    *bool   `json:"groupsIgnore,omitempty"`
+	AlwaysOnline    *bool   `json:"alwaysOnline,omitempty"`
+	ReadMessages    *bool   `json:"readMessages,omitempty"`
+	ReadStatus      *bool   `json:"readStatus,omitempty"`
+	SyncFullHistory *bool   `json:"syncFullHistory,omitempty"`
+	SGPEnabled      *bool   `json:"sgpEnabled,omitempty"`
+	SGPToken        *string `json:"sgpToken,omitempty"`
+	SGPAllowedIPs   *string `json:"sgpAllowedIPs,omitempty"`
+	SGPSyncChatwoot *bool   `json:"sgpSyncChatwoot,omitempty"`
 
 	Webhook *models.InstanceWebhook `json:"webhook,omitempty"`
 
@@ -84,11 +102,72 @@ type ListInstancesRequest struct {
 	ID           string `query:"id"`
 }
 
-type ListInstancesResponse struct {
-	*models.Instance
+// SGPInstanceInfo espelha o objeto "SGP" na resposta da API
+type SGPInstanceInfo struct {
+	Enabled      bool   `json:"enabled"`
+	Token        string `json:"token,omitempty"`
+	AllowedIPs   string `json:"allowedIPs,omitempty"`
+	SyncChatwoot bool   `json:"syncChatwoot"`
+}
 
-	OwnerJID     string `json:"ownerJid,omitempty"`
-	InstanceName string `json:"instanceName,omitempty"`
+// ChatwootInstanceInfo espelha o objeto "Chatwoot" da Evolution API
+type ChatwootInstanceInfo struct {
+	Enabled                 bool     `json:"enabled"`
+	AccountID               string   `json:"accountId"`
+	Token                   string   `json:"token"`
+	URL                     string   `json:"url"`
+	NameInbox               string   `json:"nameInbox"`
+	SignMsg                 bool     `json:"signMsg"`
+	SignDelimiter           *string  `json:"signDelimiter"`
+	Number                  *string  `json:"number"`
+	ReopenConversation      bool     `json:"reopenConversation"`
+	ConversationPending     bool     `json:"conversationPending"`
+	MergeBrazilContacts     bool     `json:"mergeBrazilContacts"`
+	ImportContacts          bool     `json:"importContacts"`
+	ImportMessages          bool     `json:"importMessages"`
+	DaysLimitImportMessages int      `json:"daysLimitImportMessages"`
+	Organization            string   `json:"organization"`
+	Logo                    string   `json:"logo"`
+	IgnoreJids              []string `json:"ignoreJids"`
+}
+
+// InstanceBaseInfo contém apenas os campos não-chatwoot da instância.
+// Usado para não vazar os campos flat chatwoot na resposta de listagem.
+type InstanceBaseInfo struct {
+	ID          string `json:"id,omitempty"`
+	Name        string `json:"name,omitempty"`
+	Integration string `json:"integration,omitempty"`
+	Token       string `json:"token,omitempty"`
+	QRCode      bool   `json:"qrcode"`
+	Number      string `json:"number,omitempty"`
+
+	RejectCall      bool   `json:"rejectCall"`
+	MsgCall         string `json:"msgCall"`
+	GroupsIgnore    bool   `json:"groupsIgnore"`
+	AlwaysOnline    bool   `json:"alwaysOnline"`
+	ReadMessages    bool   `json:"readMessages"`
+	ReadStatus      bool   `json:"readStatus"`
+	SyncFullHistory bool   `json:"syncFullHistory"`
+
+	RemoteJID string                   `json:"remoteJID,omitempty"`
+	Webhook   *models.InstanceWebhook  `json:"webhook,omitempty"`
+
+	ProxyHost     string `json:"proxyHost,omitempty"`
+	ProxyPort     string `json:"proxyPort,omitempty"`
+	ProxyProtocol string `json:"proxyProtocol,omitempty"`
+	ProxyUsername string `json:"proxyUsername,omitempty"`
+	ProxyPassword string `json:"proxyPassword,omitempty"`
+}
+
+type ListInstancesResponse struct {
+	InstanceBaseInfo
+
+	OwnerJID         string                `json:"ownerJid,omitempty"`
+	InstanceName     string                `json:"instanceName,omitempty"`
+	Name             string                `json:"name,omitempty"`
+	ConnectionStatus string                `json:"connectionStatus,omitempty"`
+	Chatwoot         *ChatwootInstanceInfo `json:"Chatwoot,omitempty"`
+	SGP              *SGPInstanceInfo      `json:"SGP"`
 }
 
 type ConnectInstanceRequest struct {

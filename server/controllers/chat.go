@@ -42,7 +42,7 @@ func (s *Chat) ReadMessages(ctx echo.Context) error {
 	}
 
 	for remoteJid, msgs := range result {
-		number, err := numberToJid(remoteJid)
+		number, err := s.whatsmiau.ResolveJID(ctx.Request().Context(), request.InstanceID, remoteJid)
 		if err != nil {
 			zap.L().Error("error converting number to jid", zap.Error(err))
 			continue
@@ -71,7 +71,7 @@ func (s *Chat) SendChatPresence(ctx echo.Context) error {
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid request body")
 	}
 
-	number, err := numberToJid(request.Number)
+	number, err := s.whatsmiau.ResolveJID(ctx.Request().Context(), request.InstanceID, request.Number)
 	if err != nil {
 		zap.L().Error("error converting number to jid", zap.Error(err))
 		return utils.HTTPFail(ctx, http.StatusBadRequest, err, "invalid number format")

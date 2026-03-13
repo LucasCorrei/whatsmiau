@@ -17,7 +17,8 @@ type InstanceProxy struct {
 }
 
 type Instance struct {
-	ID string `json:"id,omitempty"`
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
 
 	// ===== Core Config =====
 	Integration string `json:"integration,omitempty"`
@@ -33,6 +34,10 @@ type Instance struct {
 	ReadStatus        bool   `json:"readStatus"`
 	SyncFullHistory   bool   `json:"syncFullHistory"`
 	SyncRecentHistory bool   `json:"syncRecentHistory,omitempty"`
+	SGPEnabled        bool   `json:"sgpEnabled"`
+	SGPToken          string `json:"sgpToken,omitempty"`
+	SGPAllowedIPs     string `json:"sgpAllowedIPs,omitempty"`
+	SGPSyncChatwoot   bool   `json:"sgpSyncChatwoot"`
 	RemoteJID         string `json:"remoteJID,omitempty"`
 
 	// ===== Webhook =====
